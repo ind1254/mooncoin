@@ -1,4 +1,4 @@
-/* FOMO Paper Trader — front end (vanilla JS, no build step).
+/* Moonpaper — front end (vanilla JS, no build step).
    Talks to the local backend; every value shown is simulated demo data. */
 (() => {
   "use strict";

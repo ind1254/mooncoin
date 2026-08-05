@@ -1,8 +1,8 @@
 {
-  "name": "fomo-arbitrage-backend",
+  "name": "moonpaper-backend",
   "version": "0.1.0",
   "private": true,
-  "description": "Calculation-only Solana arbitrage API for the FOMO iOS app. No trade execution, no key custody.",
+  "description": "Moonpaper — paper-trading decision-support API for Solana meme-coins. Simulation only: no trade execution, no key custody.",
   "type": "module",
   "engines": {
     "node": ">=20"

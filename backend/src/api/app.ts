@@ -26,7 +26,7 @@ import { createLegacyArbitrageRouter } from "./legacyArbitrage.js";
 import { seedDemoState } from "./demoSeed.js";
 
 /**
- * FOMO Paper Trader — application factory.
+ * Moonpaper — application factory.
  *
  * PAPER TRADING ONLY. No endpoint builds, signs, or submits a transaction;
  * no private keys are requested or stored; every trading-related response is
@@ -309,7 +309,7 @@ export function createApp(deps: AppDeps): Express {
   };
 
   const meta = (deps_: AppDeps) => ({
-    product: "FOMO Paper Trader (prototype)",
+    product: "Moonpaper (prototype)",
     simulated: true,
     executionEnabled: false,
     dataSource: deps_.market.bundle.dataSourceLabel,

@@ -1,4 +1,6 @@
-# FOMO Paper Trader
+# Moonpaper
+
+*Practice the moonshot — risk nothing.*
 
 A paper-trading MVP for Solana meme-coin traders. It answers one question:
 **"Based on current market conditions, what deserves my attention, what are the
@@ -73,6 +75,9 @@ backend/src/
   core/ adapters/ ...   Original arbitrage engine (BigInt money math) — reused
 ios/ArbitrageAddOn/     SwiftUI module for the original arbitrage calculator
 demo/                   Original phone-frame arbitrage demo (served at /demo)
+                        (Mentions of "Fomo" in ios/, demo/, and docs/ refer to
+                        the unrelated third-party app the original add-on would
+                        integrate with — they are not this product's name.)
 db/schema.sql           Postgres schema for the legacy calculator (future use)
 ```
 
