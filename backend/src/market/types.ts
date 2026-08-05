@@ -1,0 +1,167 @@
+/**
+ * Normalized market-data models and provider interfaces.
+ *
+ * Every external data source is wrapped in a provider implementing one of the
+ * interfaces below, and every market value carries provenance (source,
+ * timestamp, reliability) so the UI never has to guess how fresh data is.
+ * Tokens are identified by immutable mint address everywhere; symbols are
+ * display-only.
+ *
+ * Money conventions (no floats for financial values):
+ *  - USD values:   bigint micro-USD (1 USD = 1_000_000)
+ *  - Token prices: bigint pico-USD per whole token (1 USD = 1e12) — meme-coin
+ *                  prices like $0.000014 need sub-micro precision
+ *  - SOL:          bigint lamports (1 SOL = 1_000_000_000)
+ *  - tokens:       bigint base units per the mint's decimals
+ *  - ratios:       bigint basis points (1% = 100 bps)
+ */
+
+export type Reliability = "fresh" | "stale" | "unavailable";
+
+/** A single sourced market value with provenance. */
+export interface MarketPoint<T> {
+  value: T;
+  source: string;
+  observedAtMs: number;
+  ageMs: number;
+  reliability: Reliability;
+}
+
+export interface TokenInfo {
+  mint: string;
+  symbol: string;
+  name: string;
+  decimals: number;
+  /** Unix ms the token (mint) was created — drives token-age risk factors. */
+  createdAtMs: number;
+  /** Display emoji used by the demo UI (no external image dependencies). */
+  emoji: string;
+}
+
+export interface Candle {
+  tsMs: number;
+  openPicoUsd: bigint;
+  highPicoUsd: bigint;
+  lowPicoUsd: bigint;
+  closePicoUsd: bigint;
+  volumeUsdMicro: bigint;
+}
+
+export interface LiquiditySnapshot {
+  totalUsdMicro: bigint;
+  /** Change vs ~1h ago, bps (signed). */
+  change1hBps: bigint;
+  /** Share of liquidity held by the single largest pool, bps. */
+  topPoolShareBps: bigint;
+}
+
+export interface MomentumSnapshot {
+  pricePicoUsd: bigint;
+  change5mBps: bigint;
+  change1hBps: bigint;
+  change24hBps: bigint;
+  volume1hUsdMicro: bigint;
+  /** 1h volume vs previous hour, bps (signed). */
+  volumeChange1hBps: bigint;
+  /** Buys per 100 sells over the last hour (e.g. 130n = 1.3:1). */
+  buySellRatioPct: bigint;
+  txCount1h: number;
+}
+
+export interface TokenRiskFacts {
+  tokenAgeDays: number;
+  /** Combined share of supply held by top 10 holders, bps. */
+  holderConcentrationBps: bigint;
+  mintAuthorityRevoked: boolean;
+  freezeAuthorityRevoked: boolean;
+  /** Large developer/insider movements observed recently. */
+  recentInsiderActivity: boolean;
+  /** Some risk inputs could not be retrieved. */
+  dataComplete: boolean;
+}
+
+export type QuoteSide = "buy" | "sell";
+
+/** An executable route quote for a specific size — never a chart price. */
+export interface RouteQuote {
+  venueId: string;
+  venueName: string;
+  side: QuoteSide;
+  tokenMint: string;
+  /** Buy: lamports in. Sell: token base units in. */
+  inAmount: bigint;
+  /** Buy: token base units out. Sell: lamports out. */
+  outAmount: bigint;
+  /** outAmount after the slippage tolerance is applied (worst acceptable). */
+  minReceived: bigint;
+  /** Effective USD price per whole token implied by this route, pico-USD. */
+  effectivePricePicoUsd: bigint;
+  priceImpactBps: bigint;
+  routeFeeBps: bigint;
+  networkFeeLamports: bigint;
+  priorityFeeLamports: bigint;
+  slippageBps: bigint;
+  retrievedAtMs: number;
+  expiresAtMs: number;
+  source: string;
+}
+
+export interface RouteComparison {
+  /** null when no venue could produce an executable quote. */
+  best: RouteQuote | null;
+  alternatives: RouteQuote[];
+  /** Venues that failed to quote, with structured reasons. */
+  failures: { venueId: string; code: string; message: string }[];
+}
+
+/** Aggregated, provenance-tracked view of one token used by scoring and UI. */
+export interface TokenMarketView {
+  token: TokenInfo;
+  momentum: MarketPoint<MomentumSnapshot>;
+  liquidity: MarketPoint<LiquiditySnapshot>;
+  risk: MarketPoint<TokenRiskFacts>;
+  solPriceMicroUsd: bigint;
+}
+
+// ---------------------------------------------------------------------------
+// Provider interfaces — swap implementations without touching consumers
+// ---------------------------------------------------------------------------
+
+export interface TokenDiscoveryProvider {
+  readonly source: string;
+  listTokens(): Promise<TokenInfo[]>;
+}
+
+export interface PriceHistoryProvider {
+  readonly source: string;
+  getMomentum(mint: string): Promise<MarketPoint<MomentumSnapshot>>;
+  getCandles(mint: string, points: number, stepMs: number): Promise<Candle[]>;
+}
+
+export interface LiquidityProvider {
+  readonly source: string;
+  getLiquidity(mint: string): Promise<MarketPoint<LiquiditySnapshot>>;
+}
+
+export interface TokenRiskProvider {
+  readonly source: string;
+  getRiskFacts(mint: string): Promise<MarketPoint<TokenRiskFacts>>;
+}
+
+export interface QuoteRoutingProvider {
+  readonly source: string;
+  getBuyRoutes(mint: string, lamportsIn: bigint, slippageBps: bigint): Promise<RouteComparison>;
+  getSellRoutes(mint: string, tokenUnitsIn: bigint, slippageBps: bigint): Promise<RouteComparison>;
+  getSolPriceMicroUsd(): Promise<bigint>;
+}
+
+export interface MarketDataBundle {
+  discovery: TokenDiscoveryProvider;
+  history: PriceHistoryProvider;
+  liquidity: LiquidityProvider;
+  riskFacts: TokenRiskProvider;
+  routing: QuoteRoutingProvider;
+  /** Human label shown in the UI, e.g. "Demonstration data (seeded)". */
+  dataSourceLabel: string;
+  isDemo: boolean;
+}

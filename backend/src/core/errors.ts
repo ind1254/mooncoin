@@ -10,7 +10,13 @@ export type ErrorCode =
   | "MALFORMED_PROVIDER_RESPONSE"
   | "INSUFFICIENT_VENUES"
   | "STALE_QUOTE"
-  | "INTERNAL_ERROR";
+  | "INTERNAL_ERROR"
+  // Paper-trading engine
+  | "INSUFFICIENT_PAPER_BALANCE"
+  | "NO_QUOTE_AVAILABLE"
+  | "PRICE_IMPACT_TOO_HIGH"
+  | "POSITION_NOT_FOUND"
+  | "POSITION_ALREADY_CLOSED";
 
 export class ArbError extends Error {
   constructor(

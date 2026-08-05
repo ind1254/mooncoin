@@ -61,3 +61,56 @@ export function returnBps(net: bigint, base: bigint): bigint {
   // BigInt division truncates toward zero, which is what we want for signed nets
   return scaled / base;
 }
+
+// ---------------------------------------------------------------------------
+// SOL / lamports and pico-USD token-price helpers (paper-trading MVP)
+// ---------------------------------------------------------------------------
+
+export const LAMPORTS_PER_SOL = 1_000_000_000n;
+/** Token prices use pico-USD per whole token (1 USD = 1e12). */
+export const PICO_USD = 1_000_000_000_000n;
+
+/** Parse user-facing SOL (up to 4 decimal places) into lamports. */
+export function solToLamports(sol: number): bigint {
+  if (!Number.isFinite(sol)) throw new RangeError("SOL amount must be finite");
+  if (sol <= 0) throw new RangeError("SOL amount must be positive");
+  const tenThousandths = Math.round(sol * 10_000);
+  if (Math.abs(sol * 10_000 - tenThousandths) > 1e-6) {
+    throw new RangeError("SOL amount supports at most 4 decimal places");
+  }
+  return BigInt(tenThousandths) * 100_000n;
+}
+
+export function lamportsToSolString(lamports: bigint, dp = 4): string {
+  const negative = lamports < 0n;
+  const abs = negative ? -lamports : lamports;
+  const whole = abs / LAMPORTS_PER_SOL;
+  const frac = (abs % LAMPORTS_PER_SOL).toString().padStart(9, "0").slice(0, dp);
+  return `${negative ? "-" : ""}${whole}${dp > 0 ? "." + frac : ""}`;
+}
+
+/** Format a pico-USD token price for display with adaptive precision. */
+export function picoUsdToPriceString(pico: bigint): string {
+  if (pico <= 0n) return "0";
+  const usd = Number(pico) / 1e12; // display only — never used for arithmetic
+  if (usd >= 1) return usd.toFixed(4);
+  if (usd >= 0.001) return usd.toFixed(6);
+  return usd.toFixed(9);
+}
+
+/** Format token base units for display (grouped, truncated decimals). */
+export function tokenUnitsToDisplay(units: bigint, decimals: number, dp = 2): string {
+  const scale = 10n ** BigInt(decimals);
+  const whole = units / scale;
+  const fracUnits = units % scale;
+  const grouped = whole.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  if (dp <= 0 || decimals === 0) return grouped;
+  const frac = fracUnits.toString().padStart(decimals, "0").slice(0, dp);
+  return `${grouped}.${frac}`;
+}
+
+/** value * (10000 - bps) / 10000, floored — a haircut against the user. */
+export function applyHaircutFloor(value: bigint, bps: bigint): bigint {
+  if (bps < 0n || bps > BPS_DENOMINATOR) throw new RangeError("bps out of range");
+  return (value * (BPS_DENOMINATOR - bps)) / BPS_DENOMINATOR;
+}
