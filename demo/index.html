@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FOMO Arbitrage Add-On — Browser Demo</title>
+<style>
+  :root {
+    --bg: #0d0f14;
+    --panel: #161a22;
+    --panel-2: #1e2430;
+    --line: #2a3140;
+    --text: #eef1f6;
+    --muted: #8b93a7;
+    --accent: #7c5cff;
+    --green: #2ecc71;
+    --red: #ff5d5d;
+    --orange: #f5a623;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #05060a;
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 48px;
+    padding: 24px;
+    flex-wrap: wrap;
+  }
+
+  /* ---------- explainer side panel ---------- */
+  .explainer { max-width: 340px; }
+  .explainer h1 { font-size: 22px; margin-bottom: 12px; }
+  .explainer p { color: var(--muted); font-size: 14px; line-height: 1.6; margin-bottom: 12px; }
+  .explainer .pill {
+    display: inline-block; font-size: 12px; font-weight: 600;
+    background: var(--panel-2); border: 1px solid var(--line);
+    border-radius: 999px; padding: 4px 10px; margin: 0 6px 6px 0; color: var(--muted);
+  }
+  .explainer .pill.safe { color: var(--green); border-color: rgba(46,204,113,.35); }
+
+  /* ---------- phone frame ---------- */
+  .phone {
+    width: 390px; height: 780px;
+    background: var(--bg);
+    border: 10px solid #1b1f29;
+    border-radius: 44px;
+    position: relative;
+    overflow: hidden;
+    box-shadow: 0 30px 80px rgba(0,0,0,.6);
+    flex-shrink: 0;
+  }
+  .notch {
+    position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+    width: 120px; height: 26px; background: #05060a; border-radius: 999px; z-index: 50;
+  }
+
+  /* ---------- fake FOMO host app ---------- */
+  .app { position: absolute; inset: 0; padding: 54px 18px 18px; overflow-y: auto; }
+  .app-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
+  .app-header .logo { font-size: 20px; font-weight: 800; letter-spacing: 1px; }
+  .app-header .logo span { color: var(--accent); }
+  .app-header .balance { font-size: 13px; color: var(--muted); text-align: right; }
+  .app-header .balance b { display: block; color: var(--text); font-size: 16px; }
+  .coin {
+    display: flex; align-items: center; gap: 12px;
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 16px; padding: 14px; margin-bottom: 10px;
+  }
+  .coin .icon {
+    width: 40px; height: 40px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center; font-size: 20px;
+    background: var(--panel-2);
+  }
+  .coin .meta { flex: 1; }
+  .coin .meta .sym { font-weight: 700; font-size: 15px; }
+  .coin .meta .name { font-size: 12px; color: var(--muted); }
+  .coin .px { text-align: right; }
+  .coin .px .p { font-weight: 600; font-size: 14px; }
+  .coin .px .chg { font-size: 12px; }
+  .up { color: var(--green); } .down { color: var(--red); }
+  .app-note { font-size: 11px; color: var(--muted); text-align: center; margin-top: 14px; }
+
+  /* ---------- floating launcher (the add-on entry point) ---------- */
+  .fab {
+    position: absolute; right: 20px; bottom: 26px; z-index: 40;
+    width: 58px; height: 58px; border-radius: 50%;
+    background: var(--accent); border: none; cursor: pointer;
+    color: #fff; font-size: 24px;
+    box-shadow: 0 8px 24px rgba(124,92,255,.45);
+    transition: transform .15s ease;
+  }
+  .fab:hover { transform: scale(1.07); }
+  .fab-hint {
+    position: absolute; right: 88px; bottom: 40px; z-index: 40;
+    background: var(--panel-2); border: 1px solid var(--line);
+    font-size: 12px; color: var(--muted);
+    padding: 6px 10px; border-radius: 10px; white-space: nowrap;
+    animation: bob 2s ease-in-out infinite;
+  }
+  @keyframes bob { 50% { transform: translateY(-4px); } }
+
+  /* ---------- sheet ---------- */
+  .sheet {
+    position: absolute; left: 0; right: 0; bottom: 0; z-index: 60;
+    height: 92%;
+    background: var(--panel);
+    border-radius: 24px 24px 0 0;
+    border-top: 1px solid var(--line);
+    transform: translateY(105%);
+    transition: transform .3s cubic-bezier(.32,.72,0,1);
+    display: flex; flex-direction: column;
+  }
+  .sheet.open { transform: translateY(0); }
+  .grabber { width: 40px; height: 5px; border-radius: 3px; background: var(--line); margin: 10px auto 4px; }
+  .sheet-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 18px 12px;
+  }
+  .sheet-header h2 { font-size: 17px; }
+  .sheet-header button {
+    background: none; border: none; color: var(--accent);
+    font-size: 14px; cursor: pointer; font-weight: 600;
+  }
+  .sheet-body { flex: 1; overflow-y: auto; padding: 0 18px 18px; }
+
+  .card {
+    background: var(--panel-2); border: 1px solid var(--line);
+    border-radius: 16px; padding: 16px; margin-bottom: 14px;
+  }
+  .field-label { font-size: 12px; font-weight: 600; color: var(--muted); margin: 10px 0 6px; }
+  select, input[type="text"] {
+    width: 100%; padding: 12px; border-radius: 12px;
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--line); font-size: 15px; outline: none;
+  }
+  select:focus, input:focus { border-color: var(--accent); }
+  .btn-primary {
+    width: 100%; margin-top: 14px; padding: 14px;
+    background: var(--accent); color: #fff; border: none;
+    border-radius: 12px; font-size: 15px; font-weight: 700; cursor: pointer;
+  }
+  .btn-primary:disabled { opacity: .45; cursor: not-allowed; }
+  .btn-secondary {
+    width: 100%; margin-top: 10px; padding: 12px;
+    background: none; color: var(--accent);
+    border: 1px solid var(--accent); border-radius: 12px;
+    font-size: 14px; font-weight: 600; cursor: pointer;
+  }
+
+  .loading { text-align: center; color: var(--muted); font-size: 14px; padding: 18px 0; }
+  .spinner {
+    width: 22px; height: 22px; margin: 0 auto 10px;
+    border: 3px solid var(--line); border-top-color: var(--accent);
+    border-radius: 50%; animation: spin .8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ---------- result card ---------- */
+  .result.expired { opacity: .55; }
+  .result-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  .result-top .sym { font-weight: 800; font-size: 16px; }
+  .timer {
+    font-size: 12px; font-weight: 700; padding: 4px 10px; border-radius: 999px;
+    background: var(--bg); border: 1px solid var(--line); color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .timer.warn { color: var(--orange); border-color: rgba(245,166,35,.4); }
+  .timer.expired { color: var(--orange); }
+  .row { display: flex; justify-content: space-between; font-size: 14px; padding: 5px 0; }
+  .row .k { color: var(--muted); }
+  .row .v { font-variant-numeric: tabular-nums; font-weight: 500; }
+  .divider { border: none; border-top: 1px solid var(--line); margin: 10px 0; }
+  .net-row { display: flex; justify-content: space-between; align-items: center; }
+  .net-row .k { font-weight: 700; font-size: 14px; }
+  .net-row .v { font-size: 20px; font-weight: 800; font-variant-numeric: tabular-nums; }
+  details { margin-top: 10px; }
+  summary { font-size: 13px; color: var(--muted); cursor: pointer; font-weight: 600; }
+  details .row { font-size: 13px; }
+  .warnings { margin-top: 10px; }
+  .warning {
+    display: flex; gap: 8px; align-items: flex-start;
+    font-size: 12px; color: var(--orange); padding: 3px 0;
+  }
+  .status-line {
+    margin-top: 12px; font-size: 11px; color: var(--muted); text-align: center;
+    background: var(--bg); border-radius: 10px; padding: 8px;
+    border: 1px dashed var(--line);
+  }
+  .error-box {
+    background: rgba(255,93,93,.08); border: 1px solid rgba(255,93,93,.35);
+    color: var(--red); border-radius: 12px; padding: 12px; font-size: 13px; margin-bottom: 14px;
+  }
+  .disclaimer { font-size: 11px; color: var(--muted); text-align: center; line-height: 1.5; padding: 4px 8px 12px; }
+
+  /* ---------- history ---------- */
+  .hist-item {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 12px 0; border-bottom: 1px solid var(--line);
+  }
+  .hist-item:last-child { border-bottom: none; }
+  .hist-item .left .sym { font-weight: 700; font-size: 14px; }
+  .hist-item .left .route { font-size: 12px; color: var(--muted); }
+  .hist-item .right { text-align: right; }
+  .hist-item .right .net { font-weight: 700; font-size: 14px; font-variant-numeric: tabular-nums; }
+  .hist-item .right .base { font-size: 11px; color: var(--muted); }
+  .empty { text-align: center; color: var(--muted); font-size: 13px; padding: 30px 0; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+  <div class="explainer">
+    <h1>FOMO Arbitrage Add-On <br><span style="color:var(--muted);font-size:14px;font-weight:500">browser demo of the iOS feature</span></h1>
+    <p>This phone mock-up shows exactly what ships inside the FOMO app. The purple button in the bottom-right corner is the add-on. Tap it, pick a meme coin, enter an amount, and the cloud engine compares live buy and sell prices on two different Solana venues.</p>
+    <p>If buying on one venue and selling on the other would make money <i>after every cost</i> — venue fees, network fees, price impact, and a safety buffer — it shows the estimated profit. Nothing is ever traded: every result is a paper calculation.</p>
+    <div>
+      <span class="pill safe">✓ Calculation-only</span>
+      <span class="pill safe">✓ No wallet, no keys</span>
+      <span class="pill">Solana · mock venues</span>
+      <span class="pill">Quotes expire in 20s</span>
+    </div>
+  </div>
+
+  <div class="phone">
+    <div class="notch"></div>
+
+    <!-- fake FOMO host app -->
+    <div class="app">
+      <div class="app-header">
+        <div class="logo">F<span>O</span>MO</div>
+        <div class="balance">Portfolio<b>$1,204.55</b></div>
+      </div>
+      <div class="coin"><div class="icon">🐕</div><div class="meta"><div class="sym">BONK</div><div class="name">Bonk</div></div><div class="px"><div class="p">$0.0000141</div><div class="chg up">+4.2%</div></div></div>
+      <div class="coin"><div class="icon">🧢</div><div class="meta"><div class="sym">WIF</div><div class="name">dogwifhat</div></div><div class="px"><div class="p">$0.86</div><div class="chg down">-1.8%</div></div></div>
+      <div class="coin"><div class="icon">🐸</div><div class="meta"><div class="sym">POPCAT</div><div class="name">Popcat</div></div><div class="px"><div class="p">$0.31</div><div class="chg up">+9.1%</div></div></div>
+      <div class="coin"><div class="icon">😾</div><div class="meta"><div class="sym">MEW</div><div class="name">cat in a dogs world</div></div><div class="px"><div class="p">$0.0042</div><div class="chg down">-0.6%</div></div></div>
+      <div class="app-note">▲ simulated FOMO home screen (host app) ▲</div>
+    </div>
+
+    <!-- the add-on launcher -->
+    <div class="fab-hint" id="fabHint">Tap to find arbitrage →</div>
+    <button class="fab" id="fab" title="Open arbitrage calculator" aria-label="Open arbitrage calculator">⇄</button>
+
+    <!-- the add-on sheet -->
+    <div class="sheet" id="sheet">
+      <div class="grabber"></div>
+      <div class="sheet-header">
+        <button id="historyBtn">History</button>
+        <h2 id="sheetTitle">Arbitrage</h2>
+        <button id="closeBtn">Close</button>
+      </div>
+      <div class="sheet-body">
+
+        <!-- calculator page -->
+        <div id="calcPage">
+          <div id="errorBox" class="error-box hidden"></div>
+          <div class="card">
+            <div class="field-label">TOKEN</div>
+            <select id="tokenSelect"><option>Loading verified tokens…</option></select>
+            <div class="field-label">STARTING AMOUNT (USD)</div>
+            <input type="text" id="amountInput" value="500" inputmode="decimal" placeholder="500">
+            <button class="btn-primary" id="calcBtn" disabled>Calculate</button>
+          </div>
+
+          <div id="loading" class="loading hidden">
+            <div class="spinner"></div>
+            Comparing venues…
+          </div>
+
+          <div id="resultCard" class="card result hidden">
+            <div class="result-top">
+              <div class="sym" id="rSym">—</div>
+              <div class="timer" id="rTimer">—</div>
+            </div>
+            <div class="row"><span class="k">Buy venue</span><span class="v" id="rBuy">—</span></div>
+            <div class="row"><span class="k">Sell venue</span><span class="v" id="rSell">—</span></div>
+            <div class="row"><span class="k">Starting amount</span><span class="v" id="rStart">—</span></div>
+            <div class="row"><span class="k">Estimated final value</span><span class="v" id="rFinal">—</span></div>
+            <div class="row"><span class="k">Estimated total costs</span><span class="v" id="rCosts">—</span></div>
+            <hr class="divider">
+            <div class="net-row">
+              <span class="k">Estimated net profit</span>
+              <span class="v" id="rNet">—</span>
+            </div>
+            <details>
+              <summary>Cost breakdown</summary>
+              <div class="row"><span class="k">Venue fees</span><span class="v" id="cVenue">—</span></div>
+              <div class="row"><span class="k">Network fees</span><span class="v" id="cNetwork">—</span></div>
+              <div class="row"><span class="k">Price impact</span><span class="v" id="cImpact">—</span></div>
+              <div class="row"><span class="k">Safety buffer</span><span class="v" id="cBuffer">—</span></div>
+            </details>
+            <div class="warnings" id="rWarnings"></div>
+            <button class="btn-secondary hidden" id="refreshBtn">↻ Refresh quotes</button>
+            <div class="status-line" id="rStatus">Paper calculation — no funds moved</div>
+          </div>
+
+          <div class="disclaimer">
+            Estimates only. No trades are executed and no funds move.
+            Results include fees, price impact, and a safety buffer, and expire quickly as markets change.
+          </div>
+        </div>
+
+        <!-- history page -->
+        <div id="histPage" class="hidden">
+          <div class="card">
+            <div id="histList"><div class="empty">No paper calculations yet.<br>Run a calculation and it will be recorded here.</div></div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const API = ""; // same origin as the backend
+
+  const warningCopy = {
+    STALE_QUOTE: "Quotes expired — refresh before relying on this estimate.",
+    HIGH_PRICE_IMPACT: "This trade size moves the market price noticeably.",
+    LOW_LIQUIDITY: "Not enough liquidity for this amount.",
+    PROVIDER_FAILURE: "A price source failed — comparison may be incomplete.",
+    INCOMPLETE_DATA: "Quote data was incomplete for this pair.",
+    SAME_VENUE: "Both quotes came from the same venue.",
+    TOKEN_MISMATCH: "Token identity mismatch between venues.",
+    NOT_PROFITABLE: "No profit after estimated costs.",
+  };
+
+  let timerInterval = null;
+  let onHistory = false;
+
+  // ---------- sheet open/close ----------
+  $("fab").addEventListener("click", () => {
+    $("sheet").classList.add("open");
+    $("fabHint").classList.add("hidden");
+  });
+  $("closeBtn").addEventListener("click", () => $("sheet").classList.remove("open"));
+  $("historyBtn").addEventListener("click", () => (onHistory ? showCalc() : showHistory()));
+
+  function showCalc() {
+    onHistory = false;
+    $("histPage").classList.add("hidden");
+    $("calcPage").classList.remove("hidden");
+    $("sheetTitle").textContent = "Arbitrage";
+    $("historyBtn").textContent = "History";
+  }
+  async function showHistory() {
+    onHistory = true;
+    $("calcPage").classList.add("hidden");
+    $("histPage").classList.remove("hidden");
+    $("sheetTitle").textContent = "Paper History";
+    $("historyBtn").textContent = "Back";
+    try {
+      const res = await fetch(API + "/v1/arbitrage/history");
+      const data = await res.json();
+      renderHistory(data.records || []);
+    } catch { /* keep empty state */ }
+  }
+
+  function renderHistory(records) {
+    const list = $("histList");
+    if (!records.length) {
+      list.innerHTML = '<div class="empty">No paper calculations yet.<br>Run a calculation and it will be recorded here.</div>';
+      return;
+    }
+    list.innerHTML = records.map((r) => {
+      const cls = r.isProfitable ? "up" : "down";
+      const sign = r.netProfitUsd.startsWith("-") ? "" : "+";
+      return `<div class="hist-item">
+        <div class="left">
+          <div class="sym">${r.tokenSymbol}</div>
+          <div class="route">${cap(r.buyVenueId)} → ${cap(r.sellVenueId)}</div>
+        </div>
+        <div class="right">
+          <div class="net ${cls}">${sign}$${r.netProfitUsd}</div>
+          <div class="base">on $${r.startingAmountUsd}</div>
+        </div>
+      </div>`;
+    }).join("");
+  }
+
+  const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+
+  // ---------- tokens ----------
+  async function loadTokens() {
+    try {
+      const res = await fetch(API + "/v1/arbitrage/tokens");
+      const data = await res.json();
+      const sel = $("tokenSelect");
+      sel.innerHTML = data.tokens
+        .map((t) => `<option value="${t.mint}">${t.symbol} — ${t.name}</option>`)
+        .join("");
+      $("calcBtn").disabled = false;
+    } catch {
+      showError("Could not reach the calculation service. Is the backend running? (npm run dev:mock)");
+    }
+  }
+
+  // ---------- calculate ----------
+  $("calcBtn").addEventListener("click", runCalculation);
+  $("refreshBtn").addEventListener("click", runCalculation);
+
+  function validAmount() {
+    const v = parseFloat($("amountInput").value.replace(/,/g, ""));
+    return Number.isFinite(v) && v > 0 && v <= 10000 ? v : null;
+  }
+
+  async function runCalculation() {
+    const amount = validAmount();
+    if (amount === null) {
+      showError("Enter an amount between $1 and $10,000.");
+      return;
+    }
+    hideError();
+    clearInterval(timerInterval);
+    $("resultCard").classList.add("hidden");
+    $("loading").classList.remove("hidden");
+    $("calcBtn").disabled = true;
+
+    try {
+      const res = await fetch(API + "/v1/arbitrage/calculate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tokenMint: $("tokenSelect").value, startingAmountUsd: amount }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showError(data.message || "Calculation failed.");
+        return;
+      }
+      renderResult(data);
+    } catch {
+      showError("Could not reach the calculation service.");
+    } finally {
+      $("loading").classList.add("hidden");
+      $("calcBtn").disabled = false;
+    }
+  }
+
+  function renderResult(r) {
+    const card = $("resultCard");
+    card.classList.remove("hidden", "expired");
+    $("refreshBtn").classList.add("hidden");
+
+    $("rSym").textContent = r.token.symbol;
+    $("rBuy").textContent = cap(r.buyVenue);
+    $("rSell").textContent = cap(r.sellVenue);
+    $("rStart").textContent = "$" + r.startingAmountUsd;
+    $("rFinal").textContent = "$" + r.estimatedFinalUsd;
+    $("rCosts").textContent = "-$" + r.costs.totalUsd;
+    $("cVenue").textContent = "-$" + r.costs.venueFeesUsd;
+    $("cNetwork").textContent = "-$" + r.costs.networkFeesUsd;
+    $("cImpact").textContent = "-$" + r.costs.priceImpactUsd;
+    $("cBuffer").textContent = "-$" + r.costs.safetyBufferUsd;
+
+    const net = $("rNet");
+    const sign = r.estimatedNetProfitUsd.startsWith("-") ? "" : "+";
+    net.textContent = `${sign}$${r.estimatedNetProfitUsd} (${r.estimatedReturnPct}%)`;
+    net.className = "v " + (r.isProfitable ? "up" : "down");
+
+    $("rWarnings").innerHTML = (r.warnings || [])
+      .map((w) => `<div class="warning">⚠ ${warningCopy[w] || w}</div>`)
+      .join("");
+
+    $("rStatus").textContent = r.status + " · execution disabled";
+    startCountdown(r.quotes.expiresAtMs);
+  }
+
+  function startCountdown(expiresAtMs) {
+    const timer = $("rTimer");
+    const tick = () => {
+      const left = Math.max(0, Math.ceil((expiresAtMs - Date.now()) / 1000));
+      if (left <= 0) {
+        clearInterval(timerInterval);
+        timer.textContent = "Expired";
+        timer.className = "timer expired";
+        $("resultCard").classList.add("expired");
+        $("refreshBtn").classList.remove("hidden");
+        return;
+      }
+      timer.textContent = "⏱ " + left + "s";
+      timer.className = "timer" + (left <= 5 ? " warn" : "");
+    };
+    tick();
+    timerInterval = setInterval(tick, 250);
+  }
+
+  // ---------- errors ----------
+  function showError(msg) {
+    const box = $("errorBox");
+    box.textContent = msg;
+    box.classList.remove("hidden");
+  }
+  function hideError() { $("errorBox").classList.add("hidden"); }
+
+  loadTokens();
+})();
+</script>
+</body>
+</html>

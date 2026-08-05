@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "arbitrage-mock",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev:mock", "--prefix", "backend"],
+      "port": 8787
+    }
+  ]
+}

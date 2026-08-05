@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Runtime state (paper-trading persistence, logs)
+backend/data/
+*.log
+
+# Environment — never commit real values
+.env
+.env.local
+
+# Build output
+dist/
+build/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+
+# Xcode
+ios/**/xcuserdata/
+ios/**/*.xcuserstate
+DerivedData/
+
+# Local tool state
+.claude/settings.local.json
