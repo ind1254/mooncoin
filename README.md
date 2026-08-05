@@ -1,107 +1,141 @@
-# FOMO Arbitrage Add-On
+# FOMO Paper Trader
 
-Statistical-arbitrage calculator for the FOMO iOS app, built to the
-*iOS Arbitrage Calculator Add-On* plan (Solana-first, **calculation-only MVP**).
+A paper-trading MVP for Solana meme-coin traders. It answers one question:
+**"Based on current market conditions, what deserves my attention, what are the
+risks, and what would happen if I paper-traded it?"**
 
-It compares executable token-swap quotes across approved Solana venues and shows
-an estimated net profit after fees, price impact, and a safety buffer.
-**No trades are executed, no private keys touched** — every API response carries
-`executionEnabled: false` and there is no signing code anywhere (FR-08).
+> **Prototype — paper trading only.** Every trade is simulated with virtual SOL.
+> No blockchain transactions are sent, no exchange orders are placed, no funds
+> are held, and no private keys or seed phrases are ever requested or stored.
+> Scores describe current conditions and are **not** predictions of future
+> returns. In the default demo mode, all market data is clearly-labeled
+> deterministic demonstration data.
 
-## Layout
+## The five pillars
 
-```
-backend/           TypeScript cloud API + calculation engine
-  src/core/        BigInt fixed-point money math, calculator, risk rules, error taxonomy   (ARB-001)
-  src/adapters/    Normalized quote-adapter interface, Jupiter venue adapter, mock adapter (ARB-002/003/004)
-  src/service/     Round-trip orchestration: best buy venue -> best sell venue             (ARB-005)
-  src/config/      Verified token + venue allowlist (admin-toggleable, FR-10)
-  src/store/       Paper-calculation history (in-memory; mirrors db/schema.sql)            (FR-07)
-  src/api/         Express server: /v1/arbitrage/calculate, history, tokens, admin, health
-  tests/           Invariant suite covering the plan's required test cases
-db/schema.sql      Postgres/Supabase schema for production persistence                     (ARB-006)
-ios/ArbitrageAddOn Drop-in SwiftUI feature files                                           (ARB-007/008)
-```
+| Pillar | What it does | Where |
+|---|---|---|
+| **Discover** | Ranked meme-coin opportunities with price, volume, liquidity, freshness, risk level, and a transparent quality score | Discover tab |
+| **Evaluate** | Separate momentum / liquidity / execution / risk scores, each with the exact evidence that produced it | Token detail |
+| **Compare execution** | Executable quotes per venue for your exact size: impact, pool fees, network + priority fees, min-received under slippage, best route vs alternatives | Token detail |
+| **Paper trade** | Simulated positions filled at the min-received of the best executable quote, with fees and impact applied; closes priced from live sell quotes — never chart prices | Confirm modal / Portfolio |
+| **Learn** | Virtual balance, open/closed positions, win rate, avg gain/loss, best/worst, fees paid, execution costs, performance by risk level | Portfolio tab |
 
-## Browser demo (see it work without a Mac)
+Plus: watchlist, user settings with sensible defaults, and in-app alerts that
+always explain *why* they fired (with cooldowns and material-change gates).
 
-```bash
-cd backend && npm run dev:mock
-```
+## Quick start
 
-then open **http://localhost:8787/demo/** in any browser. The page
-(`demo/index.html`) is a phone-frame mock-up of the iOS feature: a simulated
-FOMO home screen with the floating bottom-right launcher, the calculator sheet,
-live result card with countdown/expiry, warnings, and paper history — all hitting
-the real API. Built for showing non-technical stakeholders the idea end to end.
-
-## Backend
+Prerequisites: Node.js ≥ 20. No credentials, no API keys, no wallet.
 
 ```bash
 cd backend
 npm install
-npm test          # 19 invariant tests
-QUOTE_MODE=mock npm run dev   # offline dev with a deterministic inter-venue spread
-npm run dev                   # live venue-specific quotes via Jupiter (Raydium vs Orca)
+npm run dev
 ```
 
-`POST /v1/arbitrage/calculate` with `{"tokenMint": "...", "startingAmountUsd": 500}`
-returns the result-card payload: venues, cost breakdown, net profit, return %,
-quote expiry, warning codes, correlation ID.
+Open **http://localhost:8787** — the web app, seeded with a demo portfolio
+(one open position, one profitable close, one losing close, alerts).
 
-Key design rules (from the plan):
+Everything runs locally. State (paper positions, settings) persists to
+`backend/data/*.json`, which is gitignored — delete the folder to reset the demo.
 
-- **Financial precision** — all money is integer micro-USD `bigint`; token amounts are
-  integer base units. Costs round **up**, proceeds round **down**. No floats anywhere.
-- **Venue identity** — venue-specific quotes come from Jupiter's `dexes` filter
-  (Raydium vs Orca Whirlpools), so the two sides are independently identified venues.
-- **Token identity** — immutable mint addresses only; symbols are display-only.
-- **Risk rules** — stale, mismatched-mint, same-venue, incomplete, high-impact, and
-  low-liquidity results are rejected and can never be flagged profitable.
-- **Freshness** — quotes carry `retrievedAtMs`/`expiresAtMs` (20 s TTL); the earliest
-  expiry caps the whole result.
+### Environment variables
 
-## iOS integration (FOMO app) — BLOCKED external dependency
+All optional — see [backend/.env.example](backend/.env.example):
+`PORT` (8787), `MARKET_MODE` (demo), `QUOTE_MODE` (mock), `PAPER_STARTING_SOL`
+(100), `DATA_DIR` (data), `ADMIN_TOKEN` (unset).
 
-Direct FOMO integration is **blocked** until FOMO Labs provides official access;
-the full checklist is in [docs/FOMO_INTEGRATION_REQUIREMENTS.md](docs/FOMO_INTEGRATION_REQUIREMENTS.md).
-Do **not** use repositories from the `usefomo` GitHub organization — that is an
-unrelated marketing platform.
+### Tests & checks
 
-All host-app touchpoints go through the `FomoIntegrationAdapter` protocol
-(`ios/ArbitrageAddOn/FomoIntegrationAdapter.swift`):
-
-- `MockFomoIntegrationAdapter` — the default; fully functional against the local
-  mock backend, simulates user context and the "currently viewed token".
-- `FomoLabsIntegrationAdapter` — **unimplemented placeholder** that fails loudly;
-  it stays that way until official access exists.
-
-The screen is fully runnable today with the default adapter:
-
-```swift
-ContentView()
-    .arbitrageAddOn()   // floating bottom-right button -> arbitrage sheet (mock adapter)
+```bash
+cd backend
+npm test           # 55 tests: money math, scoring, paper engine, API flow, legacy engine
+npm run typecheck  # strict TypeScript, no emit
 ```
 
-Run `QUOTE_MODE=mock npm run dev` in `backend/` and launch in the simulator —
-no live providers or FOMO access needed. When access arrives, implement
-`FomoLabsIntegrationAdapter` and pass it: `.arbitrageAddOn(integration: ...)`.
-Calculation, quote validation, staleness, fees, and history never touch the
-adapter, so no engine changes will be needed.
+## Architecture
 
-The screen handles loading/error/empty states, live expiry countdown, expired-result
-refresh, backgrounding, cancellation, and VoiceOver labels, and always shows the
-"Paper calculation — no funds moved" status line.
+```
+web/                    Vanilla-JS SPA (no build step) — Discover, token detail,
+                        trade confirmation, portfolio, settings, alerts drawer
+backend/src/
+  market/               Provider interfaces (discovery, history, liquidity, risk,
+                        routing) + deterministic seeded demo implementation.
+                        All values normalized with mint identity, source,
+                        timestamp, age, and reliability.
+  scoring/              Transparent rule-based scores (0-100) with stored factors
+  paper/                Deterministic BigInt simulation engine + JSON persistence
+  notify/               Notification rules: cooldowns, transitions, explanations
+  settings/             Single-user preferences with validated defaults
+  api/                  createApp() factory, demo seeding, server entry, legacy
+                        arbitrage-calculator routes (original add-on, still works)
+  core/ adapters/ ...   Original arbitrage engine (BigInt money math) — reused
+ios/ArbitrageAddOn/     SwiftUI module for the original arbitrage calculator
+demo/                   Original phone-frame arbitrage demo (served at /demo)
+db/schema.sql           Postgres schema for the legacy calculator (future use)
+```
 
-## Deliberately out of scope (per plan)
+**Financial precision rule:** SOL amounts are bigint lamports, USD values are
+bigint micro-USD, token prices are bigint pico-USD, token amounts are bigint
+base units. Floats appear only when *generating* simulated market data and in
+display formatting — never in balances or P&L.
 
-Trade execution, custody/keys, cross-chain, unverified memecoins, and any
-guaranteed-profit language. The execution boundary is architectural: adding it
-later is a separate security/compliance project.
+**Provider boundary:** the UI, scoring, and simulation depend only on the
+normalized interfaces in `market/types.ts`. Swapping the demo simulator for
+live providers (DEX APIs, an indexer, a risk service) means implementing those
+interfaces — no UI or engine rewrites. The mock provider is honest about what
+it is: every response is labeled demonstration data, and it never claims to
+represent real market execution.
 
-## Next steps (plan phases 4–5)
+## API sketch
 
-1. Deploy the backend (Fly/Railway/Supabase Edge) and swap the in-memory store for `db/schema.sql`.
-2. Run the two-week paper-trading pilot: scheduled scanner + outcome tracking (ARB-010).
-3. Observability dashboards and alerts on provider health (ARB-011).
-4. Security/privacy review and TestFlight rollout (ARB-012).
+```
+GET  /health                        GET  /v1/meta
+GET  /v1/opportunities              ?tradeSizeSol&risk&minLiquidityUsd&search
+GET  /v1/tokens/:mint               ?tradeSizeSol      (detail + scores + evidence)
+GET  /v1/tokens/:mint/routes        ?tradeSizeSol&slippageBps
+POST /v1/paper/positions            {tokenMint, solAmount, slippageBps?}
+POST /v1/paper/positions/:id/close
+GET  /v1/paper/portfolio
+GET  /v1/notifications              POST /v1/notifications/mark-read
+GET  /v1/settings                   PUT  /v1/settings
+POST /v1/watchlist                  {mint, watched}
+POST /v1/arbitrage/calculate        (legacy calculator, USD-denominated)
+```
+
+Errors are structured: `{error: CODE, message, details}` with codes like
+`INSUFFICIENT_PAPER_BALANCE`, `PRICE_IMPACT_TOO_HIGH`, `NO_QUOTE_AVAILABLE`,
+`STALE_QUOTE`, `TOKEN_NOT_ALLOWED`, `VALIDATION_ERROR`.
+
+## Demo scenarios (seeded, deterministic)
+
+| Token | Scenario |
+|---|---|
+| BONK | Strong opportunity — volume accelerating, deep stable liquidity, low impact |
+| POPCAT | Marginal — decent momentum, thinner liquidity, one venue missing |
+| FLOOF *(synthetic)* | High risk — 2 days old, 62% holder concentration, live mint authority, draining liquidity, parabolic pump. Ranks **AVOID** |
+| WIF / MEW / PNUT | Healthy-quiet, negative momentum, and volatile-with-stale-feed respectively |
+
+The demo portfolio seeds one open position (WIF), one profitable close (BONK
++8.4%), and one losing close (FLOOF −23.5%) so every product state is visible
+immediately.
+
+## Known limitations
+
+- **No live market data yet** — the demo simulator is the only provider.
+  The provider interfaces are the integration point for real sources.
+- Single user, local JSON persistence; no auth. A real deployment needs
+  accounts, a database, and rate limiting.
+- In-app notifications only (generated by a 30s server tick); no push.
+- The iOS SwiftUI module covers the original arbitrage calculator, not the new
+  paper-trading UI; the web app is the reference front end.
+- Simulated fills assume the min-received of the best quote — conservative, but
+  still a model. Real execution differs (MEV, partial fills, congestion).
+
+## Safety boundaries (non-negotiable)
+
+- No transaction building, signing, or submission anywhere in the codebase
+- No custody, no fund transfers, no exchange orders, no auto-trading
+- No private keys or seed phrases, ever
+- No profit guarantees; simulated results are labeled simulated everywhere

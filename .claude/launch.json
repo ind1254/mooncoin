@@ -2,9 +2,9 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "arbitrage-mock",
+      "name": "paper-trader",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev:mock", "--prefix", "backend"],
+      "runtimeArgs": ["run", "dev", "--prefix", "backend"],
       "port": 8787
     }
   ]
