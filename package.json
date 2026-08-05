@@ -1,0 +1,19 @@
+{
+  "name": "moonpaper",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Moonpaper — simulated (paper-trading only) Solana meme-coin decision support. No real trades, no custody, no keys.",
+  "type": "module",
+  "engines": {
+    "node": "22.x"
+  },
+  "scripts": {
+    "build": "cd backend && npm install && npm run build",
+    "dev": "npm --prefix backend run dev",
+    "test": "npm --prefix backend test"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "zod": "^3.24.1"
+  }
+}

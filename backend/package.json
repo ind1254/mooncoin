@@ -12,6 +12,7 @@
     "dev:mock": "tsx watch src/api/server.ts --mock",
     "start": "tsx src/api/server.ts",
     "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
     "test": "vitest run"
   },
   "dependencies": {

@@ -12,6 +12,10 @@ backend/data/
 # Build output
 dist/
 build/
+# Exception: the compiled backend is committed so Vercel can run it without
+# a build step (see api/index.js and vercel.json)
+!backend/dist/
+!backend/dist/**
 
 # OS / editor noise
 .DS_Store
