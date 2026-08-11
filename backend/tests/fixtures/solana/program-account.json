@@ -1,0 +1,26 @@
+{
+  "_address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+  "_note": "owned by a loader, not a mint",
+  "_recordedAt": "2026-08-11T23:02:03.520Z",
+  "response": {
+    "jsonrpc": "2.0",
+    "result": {
+      "context": {
+        "apiVersion": "4.2.0-rc.1",
+        "slot": 438696655
+      },
+      "value": {
+        "data": [
+          "AgAAACfxkLHTr5i4znFMROjK3/n4/EXLjl+sQgLv+BENl903",
+          "base64"
+        ],
+        "executable": true,
+        "lamports": 192795783,
+        "owner": "BPFLoaderUpgradeab1e11111111111111111111111",
+        "rentEpoch": 18446744073709552000,
+        "space": 36
+      }
+    },
+    "id": 1
+  }
+}

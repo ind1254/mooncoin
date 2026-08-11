@@ -1,0 +1,16 @@
+{
+  "_address": "FLooFDemo1111111111111111111111111111111111",
+  "_note": "valid base58, no such account",
+  "_recordedAt": "2026-08-11T23:02:03.035Z",
+  "response": {
+    "jsonrpc": "2.0",
+    "result": {
+      "context": {
+        "apiVersion": "4.2.0-rc.1",
+        "slot": 438696654
+      },
+      "value": null
+    },
+    "id": 1
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "_address": "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm",
+  "_note": "classic mint, meme coin",
+  "_recordedAt": "2026-08-11T23:02:01.993Z",
+  "response": {
+    "jsonrpc": "2.0",
+    "result": {
+      "context": {
+        "apiVersion": "4.2.0-rc.1",
+        "slot": 438696651
+      },
+      "value": {
+        "data": [
+          "AAAAAA4EesA+DPAMJ/KLCHOzM3gAvuvhNFFzXHWwlBt0+H3qXBquS3CMAwAGAQAAAAAOBHrAPgzwDCfyiwhzszN4AL7r4TRRc1x1sJQbdPh96g==",
+          "base64"
+        ],
+        "executable": false,
+        "lamports": 529163431587,
+        "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "rentEpoch": 18446744073709552000,
+        "space": 82
+      }
+    },
+    "id": 1
+  }
+}
