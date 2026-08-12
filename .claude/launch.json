@@ -2,10 +2,16 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "paper-trader",
+      "name": "moonpaper-live",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev:live", "--prefix", "backend"],
+      "port": 8787
+    },
+    {
+      "name": "moonpaper-demo",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev", "--prefix", "backend"],
-      "port": 8787
+      "port": 8788
     }
   ]
 }

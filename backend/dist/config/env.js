@@ -5,8 +5,16 @@ import { z } from "zod";
  */
 const envSchema = z.object({
     PORT: z.coerce.number().int().min(1).max(65535).default(8787),
-    /** demo (default, deterministic seeded data) — live providers are a future phase. */
-    MARKET_MODE: z.enum(["demo"]).default("demo"),
+    /**
+     * demo — fully deterministic seeded data (default).
+     * live — hybrid: on-chain mint facts from Solana RPC, everything else still
+     *        simulated and labelled per field.
+     */
+    MARKET_MODE: z.enum(["demo", "live"]).default("demo"),
+    /** Solana JSON-RPC endpoint used in live mode. Read-only; no key required. */
+    SOLANA_RPC_URL: z.string().url().default("https://api.mainnet-beta.solana.com"),
+    /** How long a mint account stays cached. Mint data changes almost never. */
+    MINT_CACHE_TTL_MS: z.coerce.number().int().min(1_000).max(86_400_000).default(600_000),
     /** Legacy arbitrage endpoints: mock (offline) or jupiter (live quotes). */
     QUOTE_MODE: z.enum(["mock", "jupiter"]).default("mock"),
     /** Virtual starting balance for the paper portfolio, in SOL. */

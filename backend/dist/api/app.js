@@ -7,6 +7,7 @@ import { asArbError, ArbError } from "../core/errors.js";
 import { LAMPORTS_PER_SOL, lamportsToSolString, microToUsdString, picoUsdToPriceString, solToLamports, tokenUnitsToDisplay, } from "../core/money.js";
 import { loadEnv } from "../config/env.js";
 import { createDemoBundle } from "../market/demoProviders.js";
+import { createLiveBundle } from "../market/liveProviders.js";
 import { MarketDataService } from "../market/service.js";
 import { computeScores } from "../scoring/scores.js";
 import { PaperTradingEngine } from "../paper/engine.js";
@@ -18,7 +19,10 @@ import { seedDemoState } from "./demoSeed.js";
 export function createDefaultDeps(overrides = {}) {
     const env = overrides.env ?? loadEnv();
     const clock = overrides.clock ?? Date.now;
-    const market = overrides.market ?? new MarketDataService(createDemoBundle(clock));
+    const market = overrides.market ??
+        new MarketDataService(env.MARKET_MODE === "live"
+            ? createLiveBundle(clock, { rpcUrl: env.SOLANA_RPC_URL, mintCacheTtlMs: env.MINT_CACHE_TTL_MS })
+            : createDemoBundle(clock));
     const engine = overrides.engine ??
         new PaperTradingEngine(market, new FilePaperStateStore(join(env.DATA_DIR, "paper-state.json")), clock, {
             startingBalanceLamports: BigInt(Math.round(env.PAPER_STARTING_SOL)) * LAMPORTS_PER_SOL,
@@ -88,6 +92,28 @@ function serializeComparison(routes, decimals) {
         alternatives: routes.alternatives.map((r) => serializeRoute(r, decimals)),
         failures: routes.failures,
     };
+}
+/**
+ * Provider field names differ from the names we serialize (bps vs pct), so
+ * per-field provenance is re-keyed to match what the client actually reads.
+ * Without this a lookup silently misses and everything looks unattributed.
+ */
+const RISK_FIELD_NAMES = {
+    tokenAgeDays: "tokenAgeDays",
+    holderConcentrationBps: "holderConcentrationPct",
+    mintAuthorityRevoked: "mintAuthorityRevoked",
+    freezeAuthorityRevoked: "freezeAuthorityRevoked",
+    recentInsiderActivity: "recentInsiderActivity",
+    dataComplete: "dataComplete",
+};
+function serializeFieldSources(sources) {
+    if (!sources)
+        return null;
+    const out = {};
+    for (const [key, source] of Object.entries(sources)) {
+        out[RISK_FIELD_NAMES[key] ?? key] = source;
+    }
+    return out;
 }
 function serializeScores(scores) {
     return {
@@ -336,6 +362,13 @@ export function createApp(deps) {
                             ? { venueName: routes.best.venueName, priceImpactPct: pctStr(routes.best.priceImpactBps) }
                             : null,
                         routeFailureCount: routes.failures.length,
+                        // Already fetched for scoring, so surfacing it costs no extra call.
+                        verification: view.risk.value.onChainVerification
+                            ? {
+                                status: view.risk.value.onChainVerification.status,
+                                live: view.risk.value.onChainVerification.status === "verified",
+                            }
+                            : null,
                         inWatchlist: settings.watchlist.includes(view.token.mint),
                     };
                 }),
@@ -391,6 +424,9 @@ export function createApp(deps) {
                     freezeAuthorityRevoked: view.risk.value.freezeAuthorityRevoked,
                     recentInsiderActivity: view.risk.value.recentInsiderActivity,
                     dataComplete: view.risk.value.dataComplete,
+                    // Live mode only: which fields are chain-verified vs simulated.
+                    onChainVerification: view.risk.value.onChainVerification ?? null,
+                    fieldSources: serializeFieldSources(view.risk.fieldSources),
                 },
                 freshness: [
                     { field: "momentum", source: view.momentum.source, ageSeconds: Math.round(view.momentum.ageMs / 1000), reliability: view.momentum.reliability },

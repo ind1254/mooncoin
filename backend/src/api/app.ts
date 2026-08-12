@@ -131,6 +131,29 @@ function serializeComparison(routes: RouteComparison, decimals: number): Record<
   };
 }
 
+/**
+ * Provider field names differ from the names we serialize (bps vs pct), so
+ * per-field provenance is re-keyed to match what the client actually reads.
+ * Without this a lookup silently misses and everything looks unattributed.
+ */
+const RISK_FIELD_NAMES: Record<string, string> = {
+  tokenAgeDays: "tokenAgeDays",
+  holderConcentrationBps: "holderConcentrationPct",
+  mintAuthorityRevoked: "mintAuthorityRevoked",
+  freezeAuthorityRevoked: "freezeAuthorityRevoked",
+  recentInsiderActivity: "recentInsiderActivity",
+  dataComplete: "dataComplete",
+};
+
+function serializeFieldSources(sources?: Record<string, string>): Record<string, string> | null {
+  if (!sources) return null;
+  const out: Record<string, string> = {};
+  for (const [key, source] of Object.entries(sources)) {
+    out[RISK_FIELD_NAMES[key] ?? key] = source;
+  }
+  return out;
+}
+
 function serializeScores(scores: TokenScores): Record<string, unknown> {
   return {
     momentum: scores.momentum,
@@ -412,6 +435,13 @@ export function createApp(deps: AppDeps): Express {
               ? { venueName: routes.best.venueName, priceImpactPct: pctStr(routes.best.priceImpactBps) }
               : null,
             routeFailureCount: routes.failures.length,
+            // Already fetched for scoring, so surfacing it costs no extra call.
+            verification: view.risk.value.onChainVerification
+              ? {
+                  status: view.risk.value.onChainVerification.status,
+                  live: view.risk.value.onChainVerification.status === "verified",
+                }
+              : null,
             inWatchlist: settings.watchlist.includes(view.token.mint),
           };
         }),
@@ -471,7 +501,7 @@ export function createApp(deps: AppDeps): Express {
           dataComplete: view.risk.value.dataComplete,
           // Live mode only: which fields are chain-verified vs simulated.
           onChainVerification: view.risk.value.onChainVerification ?? null,
-          fieldSources: view.risk.fieldSources ?? null,
+          fieldSources: serializeFieldSources(view.risk.fieldSources),
         },
         freshness: [
           { field: "momentum", source: view.momentum.source, ageSeconds: Math.round(view.momentum.ageMs / 1000), reliability: view.momentum.reliability },

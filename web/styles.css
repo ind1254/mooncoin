@@ -174,6 +174,12 @@ label.field { display: block; font-size: 11px; font-weight: 700; color: var(--mu
 .back:hover { color: var(--text); }
 .detail-grid { display: grid; grid-template-columns: 1.4fr 1fr; gap: 14px; }
 @media (max-width: 860px) { .detail-grid { grid-template-columns: 1fr; } }
+/* Grid/flex items default to min-width:auto, so wide intrinsic content (the
+   chart canvas, the routes table) would otherwise push the column past the
+   viewport instead of shrinking. */
+.detail-grid > *, .detail-grid .card, .detail-grid .grid { min-width: 0; }
+canvas.spark { max-width: 100%; }
+.detail-head .mono { overflow-wrap: anywhere; }
 .kv { display: flex; justify-content: space-between; padding: 5px 0; font-size: 13px; border-bottom: 1px dashed var(--line); }
 .kv:last-child { border-bottom: none; }
 .kv .k { color: var(--muted); }
@@ -187,6 +193,64 @@ label.field { display: block; font-size: 11px; font-weight: 700; color: var(--mu
 .evidence { margin: 6px 0 0; padding: 0; list-style: none; font-size: 12px; color: var(--muted); }
 .evidence li { padding: 2px 0; }
 .evidence-toggle { background: none; border: none; color: var(--accent); font-size: 11px; font-weight: 700; padding: 2px 0; }
+
+/* ---------- provenance & verification ---------- */
+.chip.live-chip { color: var(--green); background: var(--green-soft); border-color: rgba(46,204,113,.35); }
+.chip.unver-chip { color: var(--muted); }
+
+.vpill {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11px; font-weight: 700; padding: 4px 10px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--panel-2); color: var(--muted);
+  white-space: nowrap;
+}
+.vpill.ok { color: var(--green); border-color: rgba(46,204,113,.35); background: var(--green-soft); }
+.vpill.warn { color: var(--orange); border-color: rgba(245,166,35,.35); background: var(--orange-soft); }
+
+.src {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 10px; font-weight: 700; letter-spacing: .3px;
+  padding: 2px 7px; border-radius: 6px;
+  border: 1px solid var(--line); background: var(--bg); color: var(--muted);
+  white-space: nowrap; cursor: help; flex-shrink: 0;
+}
+.src > i { width: 5px; height: 5px; border-radius: 50%; background: var(--faint); }
+.src.live { color: var(--green); border-color: rgba(46,204,113,.3); }
+.src.live > i { background: var(--green); }
+.src.sim > i { background: var(--faint); }
+
+.facts { margin-top: 12px; }
+.fact { padding: 10px 0; border-bottom: 1px dashed var(--line); }
+.fact:last-child { border-bottom: none; }
+.fact-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.fact-label { font-size: 13px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
+.fact-value { font-size: 13px; font-weight: 700; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.fact-value .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.dot.ok { background: var(--green); }
+.dot.attn { background: var(--orange); }
+.fact-meta { display: flex; align-items: flex-start; gap: 8px; margin-top: 5px; }
+.fact-why { font-size: 11px; color: var(--faint); line-height: 1.5; }
+
+.info {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 14px; height: 14px; border-radius: 50%;
+  border: 1px solid var(--line); color: var(--faint);
+  font-size: 9px; font-weight: 700; cursor: help; font-style: normal;
+}
+.info:hover, .info:focus { color: var(--text); border-color: var(--accent); outline: none; }
+
+.fallback-note {
+  margin-top: 10px; padding: 8px 10px; border-radius: 8px;
+  background: var(--orange-soft); border: 1px dashed rgba(245,166,35,.4);
+  color: var(--orange); font-size: 11px; line-height: 1.5;
+}
+
+.freshbar {
+  display: flex; flex-wrap: wrap; gap: 6px 12px;
+  margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line);
+  font-size: 10px; color: var(--faint);
+}
+.freshbar .warn { color: var(--orange); font-weight: 600; }
 
 .routes-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .routes-table th { text-align: left; color: var(--muted); font-weight: 600; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }

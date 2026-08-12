@@ -22,6 +22,8 @@ export interface LiveBundleOptions {
   rpcUrl?: string;
   /** Mint accounts change almost never; 10 minutes is comfortable. */
   mintCacheTtlMs?: number;
+  /** Injected for offline integration tests; defaults to a real client. */
+  client?: SolanaRpcClient;
 }
 
 export function createLiveBundle(
@@ -30,10 +32,12 @@ export function createLiveBundle(
 ): MarketDataBundle {
   const demo = createDemoBundle(clock);
 
-  const client = new SolanaRpcClient({
-    endpoint: options.rpcUrl ?? SOLANA_PUBLIC_MAINNET_RPC,
-    commitment: "confirmed",
-  });
+  const client =
+    options.client ??
+    new SolanaRpcClient({
+      endpoint: options.rpcUrl ?? SOLANA_PUBLIC_MAINNET_RPC,
+      commitment: "confirmed",
+    });
 
   const loader = new CachedLoader<MintReadResult>({
     ttlMs: options.mintCacheTtlMs ?? 600_000,

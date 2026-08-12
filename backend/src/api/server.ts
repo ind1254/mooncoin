@@ -5,6 +5,9 @@ import { createApp, createDefaultDeps, runNotificationTick, seedIfDemo } from ".
  * Paper trading only: no execution path exists anywhere in this process.
  */
 
+// `--live` works in any shell, unlike inline env vars on Windows.
+if (process.argv.includes("--live")) process.env.MARKET_MODE = "live";
+
 const deps = createDefaultDeps();
 seedIfDemo(deps);
 

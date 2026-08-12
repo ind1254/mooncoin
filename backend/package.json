@@ -10,6 +10,7 @@
   "scripts": {
     "dev": "tsx watch src/api/server.ts",
     "dev:mock": "tsx watch src/api/server.ts --mock",
+    "dev:live": "tsx watch src/api/server.ts --live",
     "start": "tsx src/api/server.ts",
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",

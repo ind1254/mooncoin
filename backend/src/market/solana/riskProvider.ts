@@ -58,6 +58,20 @@ export class OnChainMintRiskProvider implements TokenRiskProvider {
     const verification = await this.verify(mint, facts, fieldSources);
     facts.onChainVerification = verification;
 
+    // Observability: one structured line whenever we serve a labelled
+    // fallback, so fallback frequency is diagnosable in production logs.
+    if (verification.status !== "verified") {
+      console.warn(
+        JSON.stringify({
+          ts: new Date(verification.checkedAtMs).toISOString(),
+          msg: "on-chain verification fell back to simulated values",
+          mint,
+          status: verification.status,
+          detail: verification.detail,
+        }),
+      );
+    }
+
     return {
       ...basePoint,
       value: facts,
