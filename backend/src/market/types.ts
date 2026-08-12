@@ -25,6 +25,12 @@ export interface MarketPoint<T> {
   observedAtMs: number;
   ageMs: number;
   reliability: Reliability;
+  /**
+   * Per-field provenance for values assembled from more than one provider.
+   * Keys are field names of `value`. When absent, every field came from
+   * `source`. Lets the UI say "verified on-chain" next to "simulated".
+   */
+  fieldSources?: Record<string, string>;
 }
 
 export interface TokenInfo {
@@ -68,6 +74,23 @@ export interface MomentumSnapshot {
   txCount1h: number;
 }
 
+/**
+ * Outcome of checking a token's mint account directly on-chain.
+ * Present only in live mode; `status` other than "verified" means the
+ * authority fields below are still simulated and must be labelled as such.
+ */
+export interface OnChainMintVerification {
+  status: "verified" | "not_found" | "unsupported_program" | "malformed" | "unavailable";
+  source: string;
+  checkedAtMs: number;
+  /** Human-readable reason when status is not "verified". */
+  detail?: string;
+  /** Authoritative decimals from the mint account, when we could read it. */
+  decimalsOnChain?: number;
+  /** True when on-chain decimals disagree with the token catalog. */
+  decimalsMismatch?: boolean;
+}
+
 export interface TokenRiskFacts {
   tokenAgeDays: number;
   /** Combined share of supply held by top 10 holders, bps. */
@@ -78,6 +101,8 @@ export interface TokenRiskFacts {
   recentInsiderActivity: boolean;
   /** Some risk inputs could not be retrieved. */
   dataComplete: boolean;
+  /** Set in live mode only; absent in pure demo mode. */
+  onChainVerification?: OnChainMintVerification;
 }
 
 export type QuoteSide = "buy" | "sell";

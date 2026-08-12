@@ -14,6 +14,7 @@ import {
 } from "../core/money.js";
 import { loadEnv, type AppEnv } from "../config/env.js";
 import { createDemoBundle } from "../market/demoProviders.js";
+import { createLiveBundle } from "../market/liveProviders.js";
 import { MarketDataService } from "../market/service.js";
 import type { RouteComparison, RouteQuote, TokenMarketView } from "../market/types.js";
 import { computeScores, type ScoringLimits, type TokenScores } from "../scoring/scores.js";
@@ -45,7 +46,13 @@ export interface AppDeps {
 export function createDefaultDeps(overrides: Partial<AppDeps> = {}): AppDeps {
   const env = overrides.env ?? loadEnv();
   const clock = overrides.clock ?? Date.now;
-  const market = overrides.market ?? new MarketDataService(createDemoBundle(clock));
+  const market =
+    overrides.market ??
+    new MarketDataService(
+      env.MARKET_MODE === "live"
+        ? createLiveBundle(clock, { rpcUrl: env.SOLANA_RPC_URL, mintCacheTtlMs: env.MINT_CACHE_TTL_MS })
+        : createDemoBundle(clock),
+    );
   const engine =
     overrides.engine ??
     new PaperTradingEngine(market, new FilePaperStateStore(join(env.DATA_DIR, "paper-state.json")), clock, {
@@ -462,6 +469,9 @@ export function createApp(deps: AppDeps): Express {
           freezeAuthorityRevoked: view.risk.value.freezeAuthorityRevoked,
           recentInsiderActivity: view.risk.value.recentInsiderActivity,
           dataComplete: view.risk.value.dataComplete,
+          // Live mode only: which fields are chain-verified vs simulated.
+          onChainVerification: view.risk.value.onChainVerification ?? null,
+          fieldSources: view.risk.fieldSources ?? null,
         },
         freshness: [
           { field: "momentum", source: view.momentum.source, ageSeconds: Math.round(view.momentum.ageMs / 1000), reliability: view.momentum.reliability },
