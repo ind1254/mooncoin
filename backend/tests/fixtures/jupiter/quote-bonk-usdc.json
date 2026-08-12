@@ -1,0 +1,45 @@
+{
+  "_note": "sell 10,000 BONK",
+  "_recordedAt": "2026-08-12T21:07:58.069Z",
+  "response": {
+    "inputMint": "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263",
+    "inAmount": "1000000000",
+    "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "outAmount": "22670",
+    "otherAmountThreshold": "22557",
+    "swapMode": "ExactIn",
+    "slippageBps": 50,
+    "platformFee": null,
+    "priceImpactPct": "0.001366339669935170085524648",
+    "routePlan": [
+      {
+        "swapInfo": {
+          "ammKey": "5MMaArf3NgUjaDqYZiwYP2wbXLd8myKmmYzBzzqdfYSb",
+          "label": "Bonkswap",
+          "inputMint": "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263",
+          "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          "inAmount": "1000000000",
+          "outAmount": "22670",
+          "updateContextSlot": "438884659"
+        },
+        "percent": 100,
+        "bps": null
+      }
+    ],
+    "contextSlot": 438885984,
+    "timeTaken": 0.004188382,
+    "swapUsdValue": "0.02265991403701257754",
+    "mostReliableAmmsQuoteReport": {
+      "info": {
+        "BZtgQEyS6eXUXicYPHecYQ7PybqodXQMvkjUbP4R8mUU": "22660",
+        "6oFWm7KPLfxnwMb3z5xwBoXNSPP3JJyirAPqPSiVcnsp": "298823"
+      }
+    },
+    "longtailMarketQuoteReport": null,
+    "useIncurredSlippageForQuoting": null,
+    "useRewards": null,
+    "otherRoutePlans": null,
+    "loadedLongtailToken": false,
+    "instructionVersion": null
+  }
+}

@@ -6,6 +6,8 @@ import { z } from "zod";
 import { asArbError, ArbError } from "../core/errors.js";
 import {
   LAMPORTS_PER_SOL,
+  baseUnitsToDecimalString,
+  decimalToBaseUnits,
   lamportsToSolString,
   microToUsdString,
   picoUsdToPriceString,
@@ -17,6 +19,7 @@ import { createDemoBundle } from "../market/demoProviders.js";
 import { createLiveBundle } from "../market/liveProviders.js";
 import { MarketDataService } from "../market/service.js";
 import { JupiterTokenSearchProvider } from "../market/jupiter/tokenSearch.js";
+import { JupiterQuoteProvider, type QuoteProvider } from "../market/jupiter/quotes.js";
 import { ResearchService, type ResearchProfile } from "../market/research.js";
 import { SolanaRpcClient } from "../market/solana/rpc.js";
 import type { TokenSearchResult } from "../market/types.js";
@@ -47,6 +50,8 @@ export interface AppDeps {
   settings: SettingsStore;
   /** Arbitrary-token research: discovery provider + on-chain verification. */
   research: ResearchService;
+  /** Read-only swap quotes. Never used to build or submit a transaction. */
+  quotes: QuoteProvider;
 }
 
 /**
@@ -86,7 +91,8 @@ export function createDefaultDeps(overrides: Partial<AppDeps> = {}): AppDeps {
   const notify = overrides.notify ?? new NotificationEngine();
   const settings = overrides.settings ?? new FileSettingsStore(join(env.DATA_DIR, "settings.json"));
   const research = overrides.research ?? buildResearchService(env, clock, market);
-  return { env, clock, market, engine, notify, settings, research };
+  const quotes = overrides.quotes ?? new JupiterQuoteProvider({ baseUrl: env.JUPITER_QUOTE_URL, clock });
+  return { env, clock, market, engine, notify, settings, research, quotes };
 }
 
 /** In-memory settings store used by tests. */
@@ -126,6 +132,10 @@ export function createTestDeps(clock: () => number, env?: Partial<AppEnv>): AppD
     notify: new NotificationEngine(),
     settings: new InMemorySettingsStore(),
     research,
+    quotes: new JupiterQuoteProvider({
+      clock,
+      fetchImpl: async () => new Response("{}", { status: 503 }),
+    }),
   };
 }
 
@@ -496,6 +506,87 @@ export function createApp(deps: AppDeps): Express {
     }
   });
 
+  /**
+   * Read-only quote preview. Answers "what would this swap return right now?"
+   * and records nothing. There is no fallback: if no live quote exists the
+   * caller is told so, because a fabricated fill price would be misleading.
+   */
+  app.get("/v1/quote", async (req, res) => {
+    try {
+      const q = z
+        .object({
+          inputMint: z.string().min(32).max(64),
+          outputMint: z.string().min(32).max(64),
+          amount: z.string().min(1).max(32),
+          slippageBps: z.coerce.number().int().min(1).max(5_000).default(50),
+        })
+        .safeParse(req.query);
+      if (!q.success) {
+        throw new ArbError("VALIDATION_ERROR", "inputMint, outputMint and amount are required", 400, {
+          issues: q.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`),
+        });
+      }
+
+      const abort = new AbortController();
+      req.on("close", () => abort.abort());
+
+      // Decimals come from the canonical token record, never from the client.
+      const [inputToken, outputToken] = await Promise.all([
+        deps.research.resolveToken(q.data.inputMint, abort.signal),
+        deps.research.resolveToken(q.data.outputMint, abort.signal),
+      ]);
+      if (!inputToken) throw new ArbError("TOKEN_NOT_ALLOWED", "Unknown input token", 404);
+      if (!outputToken) throw new ArbError("TOKEN_NOT_ALLOWED", "Unknown output token", 404);
+
+      let amountBase: bigint;
+      try {
+        amountBase = decimalToBaseUnits(q.data.amount, inputToken.decimals);
+      } catch (err) {
+        throw new ArbError("VALIDATION_ERROR", (err as Error).message, 400);
+      }
+
+      const quote = await deps.quotes.getQuote(
+        {
+          inputMint: inputToken.mint,
+          outputMint: outputToken.mint,
+          amount: amountBase,
+          slippageBps: BigInt(q.data.slippageBps),
+        },
+        abort.signal,
+      );
+
+      const now = deps.clock();
+      res.json({
+        simulationOnly: true,
+        executionEnabled: false,
+        notice: "Live quote for a hypothetical trade. Moonpaper does not submit transactions.",
+        input: { mint: inputToken.mint, symbol: inputToken.symbol, decimals: inputToken.decimals },
+        output: { mint: outputToken.mint, symbol: outputToken.symbol, decimals: outputToken.decimals },
+        quote: {
+          inAmount: baseUnitsToDecimalString(quote.inAmount, inputToken.decimals),
+          outAmount: baseUnitsToDecimalString(quote.outAmount, outputToken.decimals),
+          minOutAmount: baseUnitsToDecimalString(quote.minOutAmount, outputToken.decimals),
+          inAmountRaw: quote.inAmount.toString(),
+          outAmountRaw: quote.outAmount.toString(),
+          priceImpactPct: pctStr(quote.priceImpactBps),
+          slippagePct: pctStr(quote.slippageBps),
+          swapUsdValue: quote.swapUsdValueMicro === null ? null : microToUsdString(quote.swapUsdValueMicro),
+          route: quote.routePlan.map((h) => ({ venue: h.ammLabel, percent: h.percent })),
+          contextSlot: quote.contextSlot,
+          retrievedAtMs: quote.retrievedAtMs,
+          expiresAtMs: quote.expiresAtMs,
+          ageSeconds: Math.max(0, Math.round((now - quote.retrievedAtMs) / 1000)),
+          expired: now >= quote.expiresAtMs,
+          source: quote.source,
+          // Stated plainly: the expiry is our policy, not the provider's.
+          freshnessPolicy: "Quote expiry is set by Moonpaper; Jupiter does not return one.",
+        },
+      });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
   app.get("/v1/research/:mint", async (req, res) => {
     try {
       const abort = new AbortController();
@@ -809,8 +900,12 @@ export function createApp(deps: AppDeps): Express {
 
   // ---- Static frontends ----
   const rootDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
-  app.use("/demo", express.static(join(rootDir, "demo")));
-  app.use("/", express.static(join(rootDir, "web")));
+  // maxAge 0 + etag: the browser may cache, but must revalidate every time.
+  // Without this it heuristically caches app.js and serves a stale build
+  // after a deploy, which is indistinguishable from a broken release.
+  const staticOptions = { maxAge: 0, etag: true, lastModified: true };
+  app.use("/demo", express.static(join(rootDir, "demo"), staticOptions));
+  app.use("/", express.static(join(rootDir, "web"), staticOptions));
 
   return app;
 }

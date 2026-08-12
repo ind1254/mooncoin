@@ -316,6 +316,11 @@ export class ResearchService {
     return this.discovery.source;
   }
 
+  /** Canonical token identity, used to resolve decimals before quoting. */
+  async resolveToken(mint: string, signal?: AbortSignal): Promise<TokenSearchResult | null> {
+    return this.discovery.getByMint(mint, signal);
+  }
+
   async search(query: string, signal?: AbortSignal): Promise<TokenSearchResult[]> {
     return this.discovery.search(query, signal);
   }

@@ -17,7 +17,9 @@ export type ErrorCode =
   | "NO_QUOTE_AVAILABLE"
   | "PRICE_IMPACT_TOO_HIGH"
   | "POSITION_NOT_FOUND"
-  | "POSITION_ALREADY_CLOSED";
+  | "POSITION_ALREADY_CLOSED"
+  /** No live quote could be obtained. Never substituted with a simulated one. */
+  | "QUOTE_UNAVAILABLE";
 
 export class ArbError extends Error {
   constructor(

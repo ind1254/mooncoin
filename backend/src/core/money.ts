@@ -109,6 +109,33 @@ export function tokenUnitsToDisplay(units: bigint, decimals: number, dp = 2): st
   return `${grouped}.${frac}`;
 }
 
+/**
+ * Parse a user-entered decimal amount into base units, using text rather than
+ * floats so "0.1" never becomes 0.09999999999999999.
+ */
+export function decimalToBaseUnits(value: string, decimals: number): bigint {
+  const match = /^(\d+)(?:\.(\d*))?$/.exec(value.trim());
+  if (!match) throw new RangeError("Amount must be a positive decimal number");
+  const whole = match[1] ?? "0";
+  const fracRaw = match[2] ?? "";
+  if (fracRaw.length > decimals) {
+    throw new RangeError(`This token supports at most ${decimals} decimal places`);
+  }
+  const frac = (fracRaw + "0".repeat(decimals)).slice(0, decimals);
+  const units = BigInt(whole) * 10n ** BigInt(decimals) + BigInt(frac === "" ? "0" : frac);
+  if (units <= 0n) throw new RangeError("Amount must be greater than zero");
+  return units;
+}
+
+/** Render base units as a plain decimal string, exact (no float). */
+export function baseUnitsToDecimalString(units: bigint, decimals: number): string {
+  if (decimals === 0) return units.toString();
+  const scale = 10n ** BigInt(decimals);
+  const whole = units / scale;
+  const frac = (units % scale).toString().padStart(decimals, "0").replace(/0+$/, "");
+  return frac ? `${whole}.${frac}` : whole.toString();
+}
+
 /** value * (10000 - bps) / 10000, floored — a haircut against the user. */
 export function applyHaircutFloor(value: bigint, bps: bigint): bigint {
   if (bps < 0n || bps > BPS_DENOMINATOR) throw new RangeError("bps out of range");

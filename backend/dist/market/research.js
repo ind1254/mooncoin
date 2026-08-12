@@ -225,6 +225,10 @@ export class ResearchService {
     get searchSource() {
         return this.discovery.source;
     }
+    /** Canonical token identity, used to resolve decimals before quoting. */
+    async resolveToken(mint, signal) {
+        return this.discovery.getByMint(mint, signal);
+    }
     async search(query, signal) {
         return this.discovery.search(query, signal);
     }

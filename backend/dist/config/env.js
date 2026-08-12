@@ -17,6 +17,8 @@ const envSchema = z.object({
     MINT_CACHE_TTL_MS: z.coerce.number().int().min(1_000).max(86_400_000).default(600_000),
     /** Token discovery/search API. Public and keyless; override to self-host. */
     JUPITER_TOKENS_URL: z.string().url().default("https://lite-api.jup.ag/tokens/v2"),
+    /** Read-only swap quotes. Only /quote is ever called, never /swap. */
+    JUPITER_QUOTE_URL: z.string().url().default("https://lite-api.jup.ag/swap/v1"),
     /** Legacy arbitrage endpoints: mock (offline) or jupiter (live quotes). */
     QUOTE_MODE: z.enum(["mock", "jupiter"]).default("mock"),
     /** Virtual starting balance for the paper portfolio, in SOL. */

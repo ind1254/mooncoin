@@ -310,6 +310,26 @@ canvas.spark { max-width: 100%; }
   .rh-price { margin-left: 0; text-align: left; width: 100%; }
 }
 
+/* ---------- live quote ---------- */
+.quote-card {
+  margin-top: 12px; padding: 12px;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 12px;
+}
+.quote-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.quote-title { font-size: 12px; font-weight: 800; letter-spacing: .4px; color: var(--green); }
+.quote-age {
+  font-size: 10px; font-weight: 700; color: var(--muted);
+  background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 999px; padding: 2px 8px; font-variant-numeric: tabular-nums;
+}
+.quote-age.aging { color: var(--orange); }
+.quote-age.expired { color: var(--red); border-color: rgba(255,93,93,.4); }
+.quote-prov { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.quote-facts {
+  margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line);
+  font-size: 11px; color: var(--muted); line-height: 1.55;
+}
+
 /* ---------- provenance & verification ---------- */
 .chip.live-chip { color: var(--green); background: var(--green-soft); border-color: rgba(46,204,113,.35); }
 .chip.unver-chip { color: var(--muted); }

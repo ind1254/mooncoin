@@ -721,18 +721,20 @@
           </div>
 
           <div class="card">
-            <h3>Simulate a trade</h3>
+            <h3>Simulate a buy</h3>
+            <div class="tiny muted" style="margin-top:4px">Moonpaper requests a real, read-only Jupiter quote to show what this trade would return right now.</div>
+            <label class="field" style="margin-top:12px">AMOUNT (USDC)</label>
+            <div class="row">
+              <input type="text" id="quoteAmt" value="100" inputmode="decimal" placeholder="100">
+              <button class="btn" id="quoteBtn" style="white-space:nowrap">Get quote</button>
+            </div>
+            <div id="quoteOut"></div>
             ${
               d.simulation.available
-                ? `<div class="tiny muted" style="margin-top:4px">Executable quotes are available for this token.</div>
-                   <button class="btn" id="simBtn" style="width:100%;margin-top:12px">Open paper trade</button>`
-                : `<div class="unavail-block">
-                     <div class="unavail-title">Paper trading not available for this token yet</div>
-                     <div class="tiny muted">${esc(d.simulation.reason)}</div>
-                     <div class="tiny faint" style="margin-top:8px">Moonpaper will not simulate a fill without a real quote, because a made-up entry price would make the whole simulation meaningless.</div>
-                   </div>`
+                ? `<button class="btn secondary" id="simBtn" style="width:100%;margin-top:10px">Open the simulator for this token</button>`
+                : ""
             }
-            <div class="sim-notice">Research and simulation only — Moonpaper never connects a wallet, requests keys, or submits a transaction.</div>
+            <div class="sim-notice">Paper simulation only. No blockchain transaction will be submitted, no wallet is connected, and no keys are ever requested.</div>
           </div>
         </div>
       </div>`;
@@ -740,6 +742,75 @@
     container.querySelector("#backBtn").addEventListener("click", () => (location.hash = "#/"));
     const simBtn = container.querySelector("#simBtn");
     if (simBtn) simBtn.addEventListener("click", () => (location.hash = `#/token/${d.mint}`));
+
+    const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+    let quoteTimer = null;
+
+    async function getQuote() {
+      // Document lookups, not container lookups: render() moves these nodes
+      // into the live view, leaving `container` empty.
+      const out = $("quoteOut");
+      const amt = $("quoteAmt").value.trim();
+      clearInterval(quoteTimer);
+      out.innerHTML = `<div class="sstate"><div class="spinner"></div>Requesting a live quote…</div>`;
+      try {
+        const params = new URLSearchParams({ inputMint: USDC, outputMint: d.mint, amount: amt, slippageBps: "50" });
+        const q = await api(`/v1/quote?${params}`);
+        renderQuote(q);
+      } catch (err) {
+        // No fallback on purpose: a made-up fill price would be misleading.
+        out.innerHTML = `<div class="unavail-block">
+            <div class="unavail-title">Quote unavailable</div>
+            <div class="tiny muted">${esc(err.message)}</div>
+            <div class="tiny faint" style="margin-top:8px">Moonpaper will not substitute a simulated price here. A quote decides the hypothetical fill, so an invented one would make the simulation meaningless.</div>
+          </div>`;
+      }
+    }
+
+    function renderQuote(q) {
+      const out = $("quoteOut");
+      const c = q.quote;
+      const route = c.route.map((r) => `${esc(r.venue)}${r.percent < 100 ? ` ${r.percent}%` : ""}`).join(" → ");
+      out.innerHTML = `
+        <div class="quote-card">
+          <div class="quote-head">
+            <span class="quote-title">Live quote</span>
+            <span class="quote-age" id="quoteAge">just now</span>
+          </div>
+          <div class="kv"><span class="k">You pay</span><span class="v mono">${esc(c.inAmount)} ${esc(q.input.symbol)}</span></div>
+          <div class="kv"><span class="k">Expected to receive</span><span class="v mono">${esc(c.outAmount)} ${esc(q.output.symbol)}</span></div>
+          <div class="kv"><span class="k">Minimum received<span class="info" tabindex="0" title="The least you would get if the price moved against you by your full slippage tolerance.">i</span></span><span class="v mono">${esc(c.minOutAmount)} ${esc(q.output.symbol)}</span></div>
+          <div class="kv"><span class="k">Price impact<span class="info" tabindex="0" title="How much this trade size would move the execution price.">i</span></span><span class="v mono">${esc(c.priceImpactPct)}%</span></div>
+          <div class="kv"><span class="k">Slippage assumption</span><span class="v mono">${esc(c.slippagePct)}%</span></div>
+          <div class="kv"><span class="k">Route</span><span class="v">${route || "—"}</span></div>
+          ${c.swapUsdValue ? `<div class="kv"><span class="k">Notional</span><span class="v mono">$${esc(c.swapUsdValue)}</span></div>` : ""}
+          <div class="quote-prov">
+            ${sourceBadge("jupiter:quote-v1")}
+            <span class="tiny faint">${esc(c.freshnessPolicy)}</span>
+          </div>
+          <div class="quote-facts">
+            <div><span class="interp-tag">Fact</span> Jupiter quoted ${esc(c.outAmount)} ${esc(q.output.symbol)} for ${esc(c.inAmount)} ${esc(q.input.symbol)} at ${new Date(c.retrievedAtMs).toLocaleTimeString()}.</div>
+            <div style="margin-top:5px"><span class="interp-tag">Simulation</span> Moonpaper would record that quote as the hypothetical execution price. Nothing is sent to Solana.</div>
+          </div>
+        </div>`;
+
+      // Freshness must be visible and must decay in front of the user.
+      const tick = () => {
+        const el = $("quoteAge");
+        if (!el) return clearInterval(quoteTimer);
+        const age = Math.round((Date.now() - c.retrievedAtMs) / 1000);
+        const expired = Date.now() >= c.expiresAtMs;
+        el.textContent = expired ? "expired — request a new quote" : `${age}s old`;
+        el.className = "quote-age" + (expired ? " expired" : age > 10 ? " aging" : "");
+      };
+      tick();
+      quoteTimer = setInterval(tick, 1000);
+    }
+
+    container.querySelector("#quoteBtn").addEventListener("click", getQuote);
+    container.querySelector("#quoteAmt").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") getQuote();
+    });
   }
 
   // ---------- Token detail ----------
