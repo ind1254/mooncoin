@@ -16,6 +16,10 @@ import { loadEnv, type AppEnv } from "../config/env.js";
 import { createDemoBundle } from "../market/demoProviders.js";
 import { createLiveBundle } from "../market/liveProviders.js";
 import { MarketDataService } from "../market/service.js";
+import { JupiterTokenSearchProvider } from "../market/jupiter/tokenSearch.js";
+import { ResearchService, type ResearchProfile } from "../market/research.js";
+import { SolanaRpcClient } from "../market/solana/rpc.js";
+import type { TokenSearchResult } from "../market/types.js";
 import type { RouteComparison, RouteQuote, TokenMarketView } from "../market/types.js";
 import { computeScores, type ScoringLimits, type TokenScores } from "../scoring/scores.js";
 import { PaperTradingEngine } from "../paper/engine.js";
@@ -41,6 +45,27 @@ export interface AppDeps {
   engine: PaperTradingEngine;
   notify: NotificationEngine;
   settings: SettingsStore;
+  /** Arbitrary-token research: discovery provider + on-chain verification. */
+  research: ResearchService;
+}
+
+/**
+ * Research is available in every mode. Discovery and on-chain verification do
+ * not depend on the demo simulator, so a user can research any real token even
+ * while the simulated market powers the Discover tab.
+ */
+function buildResearchService(env: AppEnv, clock: () => number, market: MarketDataService): ResearchService {
+  return new ResearchService(
+    new JupiterTokenSearchProvider({ baseUrl: env.JUPITER_TOKENS_URL, clock }),
+    new SolanaRpcClient({ endpoint: env.SOLANA_RPC_URL, commitment: "confirmed" }),
+    {
+      clock,
+      mintCacheTtlMs: env.MINT_CACHE_TTL_MS,
+      // Quotes only exist for tokens the simulator knows about, so paper
+      // trading is offered only where a fill can honestly be modelled.
+      simulationAvailable: async (mint) => (await market.listTokens()).some((t) => t.mint === mint),
+    },
+  );
 }
 
 export function createDefaultDeps(overrides: Partial<AppDeps> = {}): AppDeps {
@@ -60,7 +85,8 @@ export function createDefaultDeps(overrides: Partial<AppDeps> = {}): AppDeps {
     });
   const notify = overrides.notify ?? new NotificationEngine();
   const settings = overrides.settings ?? new FileSettingsStore(join(env.DATA_DIR, "settings.json"));
-  return { env, clock, market, engine, notify, settings };
+  const research = overrides.research ?? buildResearchService(env, clock, market);
+  return { env, clock, market, engine, notify, settings, research };
 }
 
 /** In-memory settings store used by tests. */
@@ -85,7 +111,22 @@ export function createTestDeps(clock: () => number, env?: Partial<AppEnv>): AppD
   const engine = new PaperTradingEngine(market, new InMemoryPaperStateStore(), clock, {
     startingBalanceLamports: BigInt(Math.round(fullEnv.PAPER_STARTING_SOL)) * LAMPORTS_PER_SOL,
   });
-  return { env: fullEnv, clock, market, engine, notify: new NotificationEngine(), settings: new InMemorySettingsStore() };
+  // Offline by default: an empty discovery transport, so a test that does not
+  // explicitly provide fixtures can never reach the network.
+  const research = new ResearchService(
+    new JupiterTokenSearchProvider({ clock, fetchImpl: async () => new Response("[]", { status: 200 }) }),
+    new SolanaRpcClient({ fetchImpl: async () => new Response("{}", { status: 503 }) }),
+    { clock },
+  );
+  return {
+    env: fullEnv,
+    clock,
+    market,
+    engine,
+    notify: new NotificationEngine(),
+    settings: new InMemorySettingsStore(),
+    research,
+  };
 }
 
 const pctStr = (bps: bigint | number): string => (Number(bps) / 100).toFixed(2);
@@ -152,6 +193,75 @@ function serializeFieldSources(sources?: Record<string, string>): Record<string,
     out[RISK_FIELD_NAMES[key] ?? key] = source;
   }
   return out;
+}
+
+/** Same ticker on more than one mint — the case the UI must never collapse. */
+function hasDuplicateSymbols(results: TokenSearchResult[]): boolean {
+  const seen = new Set<string>();
+  for (const r of results) {
+    const key = r.symbol.toLowerCase();
+    if (seen.has(key)) return true;
+    seen.add(key);
+  }
+  return false;
+}
+
+const usdOrNull = (v: bigint | null): string | null => (v === null ? null : microToUsdString(v));
+const pctOrNull = (v: bigint | null): string | null => (v === null ? null : pctStr(v));
+
+function serializeSearchResult(r: TokenSearchResult): Record<string, unknown> {
+  return {
+    mint: r.mint,
+    symbol: r.symbol,
+    name: r.name,
+    decimals: r.decimals,
+    iconUrl: r.iconUrl,
+    tokenProgram: r.tokenProgram,
+    verifiedByProvider: r.verifiedByProvider,
+    tags: r.tags,
+    source: r.source,
+    // Enough market context to tell same-ticker tokens apart.
+    priceUsd: r.market.priceUsdPico === null ? null : picoUsdToPriceString(r.market.priceUsdPico),
+    liquidityUsd: usdOrNull(r.market.liquidityUsdMicro),
+    holderCount: r.market.holderCount,
+  };
+}
+
+function serializeProfile(p: ResearchProfile): Record<string, unknown> {
+  return {
+    mint: p.mint,
+    symbol: p.symbol,
+    name: p.name,
+    decimals: p.decimals,
+    tokenProgram: p.tokenProgram,
+    iconUrl: p.iconUrl,
+    tags: p.tags,
+    verifiedByProvider: p.verifiedByProvider,
+    identitySource: p.identitySource,
+    marketSource: p.marketSource,
+    fetchedAtMs: p.fetchedAtMs,
+    market: {
+      priceUsd: p.market.priceUsdPico === null ? null : picoUsdToPriceString(p.market.priceUsdPico),
+      liquidityUsd: usdOrNull(p.market.liquidityUsdMicro),
+      marketCapUsd: usdOrNull(p.market.marketCapUsdMicro),
+      fdvUsd: usdOrNull(p.market.fdvUsdMicro),
+      holderCount: p.market.holderCount,
+      change1hPct: pctOrNull(p.market.change1hBps),
+      change24hPct: pctOrNull(p.market.change24hBps),
+      buyVolume24hUsd: usdOrNull(p.market.buyVolume24hUsdMicro),
+      sellVolume24hUsd: usdOrNull(p.market.sellVolume24hUsdMicro),
+      numBuys24h: p.market.numBuys24h,
+      numSells24h: p.market.numSells24h,
+      topHolderPct: pctOrNull(p.market.topHolderPctBps),
+      organicScore: p.market.organicScore,
+      organicScoreLabel: p.market.organicScoreLabel,
+      source: p.marketSource,
+    },
+    verification: p.verification,
+    authorities: p.authorities,
+    risk: p.risk,
+    simulation: p.simulation,
+  };
 }
 
 function serializeScores(scores: TokenScores): Record<string, unknown> {
@@ -354,6 +464,44 @@ export function createApp(deps: AppDeps): Express {
     try {
       const solPrice = await deps.market.getSolPriceMicroUsd();
       res.json({ ...meta(deps), solPriceUsd: microToUsdString(solPrice) });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  // ---- Research: search any Solana token ----
+  app.get("/v1/search", async (req, res) => {
+    try {
+      const q = z
+        .object({ q: z.string().min(1).max(64) })
+        .safeParse(req.query);
+      if (!q.success) {
+        throw new ArbError("VALIDATION_ERROR", "A search query is required", 400);
+      }
+      const query = q.data.q.trim();
+      const abort = new AbortController();
+      req.on("close", () => abort.abort());
+
+      const results = await deps.research.search(query, abort.signal);
+      res.json({
+        query,
+        count: results.length,
+        // Distinct mints sharing one ticker is normal; the UI must disambiguate.
+        duplicateSymbols: hasDuplicateSymbols(results),
+        source: deps.research.searchSource,
+        results: results.map(serializeSearchResult),
+      });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  app.get("/v1/research/:mint", async (req, res) => {
+    try {
+      const abort = new AbortController();
+      req.on("close", () => abort.abort());
+      const profile = await deps.research.getProfile(req.params.mint!, abort.signal);
+      res.json({ ...meta(deps), ...serializeProfile(profile) });
     } catch (err) {
       fail(res, err);
     }

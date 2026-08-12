@@ -17,6 +17,8 @@ const envSchema = z.object({
   SOLANA_RPC_URL: z.string().url().default("https://api.mainnet-beta.solana.com"),
   /** How long a mint account stays cached. Mint data changes almost never. */
   MINT_CACHE_TTL_MS: z.coerce.number().int().min(1_000).max(86_400_000).default(600_000),
+  /** Token discovery/search API. Public and keyless; override to self-host. */
+  JUPITER_TOKENS_URL: z.string().url().default("https://lite-api.jup.ag/tokens/v2"),
   /** Legacy arbitrage endpoints: mock (offline) or jupiter (live quotes). */
   QUOTE_MODE: z.enum(["mock", "jupiter"]).default("mock"),
   /** Virtual starting balance for the paper portfolio, in SOL. */

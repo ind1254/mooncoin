@@ -157,6 +157,64 @@ export interface TokenDiscoveryProvider {
   listTokens(): Promise<TokenInfo[]>;
 }
 
+/**
+ * Market facts reported by a discovery provider. Every field is nullable:
+ * a provider that stops reporting one metric must degrade that value alone,
+ * never the whole record.
+ */
+export interface DiscoveredMarketFacts {
+  priceUsdPico: bigint | null;
+  liquidityUsdMicro: bigint | null;
+  marketCapUsdMicro: bigint | null;
+  fdvUsdMicro: bigint | null;
+  holderCount: number | null;
+  change1hBps: bigint | null;
+  change24hBps: bigint | null;
+  buyVolume24hUsdMicro: bigint | null;
+  sellVolume24hUsdMicro: bigint | null;
+  numBuys24h: number | null;
+  numSells24h: number | null;
+  /** Share of supply held by the largest holders, bps, as reported. */
+  topHolderPctBps: bigint | null;
+  organicScore: number | null;
+  organicScoreLabel: string | null;
+}
+
+/**
+ * A token as returned by discovery search. The mint is the canonical
+ * identity; symbol and name are display-only and are NOT unique.
+ */
+export interface TokenSearchResult {
+  mint: string;
+  symbol: string;
+  name: string;
+  decimals: number;
+  tokenProgram: string | null;
+  iconUrl: string | null;
+  /** The provider's own verified/allowlist flag — a hint, not proof. */
+  verifiedByProvider: boolean;
+  tags: string[];
+  source: string;
+  market: DiscoveredMarketFacts;
+  /**
+   * Authority claims made by the discovery provider. Retained only to
+   * cross-check against the chain, which is authoritative. A null means the
+   * provider did not report it — which is not the same as false.
+   */
+  providerClaims: {
+    mintAuthorityDisabled: boolean | null;
+    freezeAuthorityDisabled: boolean | null;
+  };
+}
+
+export interface TokenSearchProvider {
+  readonly source: string;
+  /** Free-text search over symbol, name, or mint address. */
+  search(query: string, signal?: AbortSignal): Promise<TokenSearchResult[]>;
+  /** Exact resolution by canonical mint address. */
+  getByMint(mint: string, signal?: AbortSignal): Promise<TokenSearchResult | null>;
+}
+
 export interface PriceHistoryProvider {
   readonly source: string;
   getMomentum(mint: string): Promise<MarketPoint<MomentumSnapshot>>;

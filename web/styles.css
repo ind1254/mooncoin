@@ -194,6 +194,122 @@ canvas.spark { max-width: 100%; }
 .evidence li { padding: 2px 0; }
 .evidence-toggle { background: none; border: none; color: var(--accent); font-size: 11px; font-weight: 700; padding: 2px 0; }
 
+/* ---------- hero search ---------- */
+.hero { text-align: center; padding: 26px 0 20px; position: relative; }
+.hero h1 { font-size: 27px; font-weight: 800; letter-spacing: -0.4px; }
+.hero-sub { color: var(--muted); font-size: 14px; max-width: 560px; margin: 8px auto 18px; line-height: 1.6; }
+.hero-note { color: var(--faint); font-size: 11px; margin-top: 12px; }
+
+.searchbox {
+  display: flex; align-items: center; gap: 10px;
+  max-width: 620px; margin: 0 auto;
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 14px; padding: 0 14px;
+  transition: border-color .15s, box-shadow .15s;
+}
+.searchbox:focus-within { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+.searchbox-icon { color: var(--faint); font-size: 18px; }
+.searchbox input {
+  flex: 1; background: none; border: none; outline: none;
+  color: var(--text); font-size: 15px; padding: 14px 0; width: 100%;
+}
+.searchbox input::placeholder { color: var(--faint); }
+.searchbox-clear { background: none; border: none; color: var(--faint); font-size: 13px; padding: 6px; }
+.searchbox-clear:hover { color: var(--text); }
+
+.search-panel {
+  max-width: 620px; margin: 8px auto 0; text-align: left;
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 14px; overflow: hidden;
+  max-height: 60vh; overflow-y: auto;
+  box-shadow: 0 20px 50px rgba(0,0,0,.45);
+}
+.sstate { padding: 22px 16px; text-align: center; color: var(--muted); font-size: 13px; }
+.sstate.error { color: var(--red); }
+.sdupe {
+  padding: 9px 14px; font-size: 11px; line-height: 1.5;
+  color: var(--orange); background: var(--orange-soft);
+  border-bottom: 1px solid var(--line);
+}
+.sresult {
+  display: flex; align-items: center; gap: 12px;
+  padding: 11px 14px; cursor: pointer;
+  border-bottom: 1px solid var(--line);
+}
+.sresult:last-child { border-bottom: none; }
+.sresult:hover, .sresult.active { background: var(--panel-2); }
+.sresult.active { box-shadow: inset 3px 0 0 var(--accent); }
+.sresult-icon {
+  width: 34px; height: 34px; border-radius: 50%; flex-shrink: 0;
+  background: var(--panel-2); display: flex; align-items: center; justify-content: center;
+  color: var(--faint); overflow: hidden;
+}
+.sresult-icon img { width: 100%; height: 100%; object-fit: cover; }
+.sresult-main { min-width: 0; flex: 1; }
+.sresult-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sresult-sym { font-weight: 700; font-size: 14px; }
+.sresult-name { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 190px; }
+.sresult-meta { font-size: 11px; color: var(--faint); margin-top: 2px; }
+
+/* ---------- research page ---------- */
+.research-head { display: flex; align-items: flex-start; gap: 14px; flex-wrap: wrap; margin-bottom: 16px; }
+.rh-icon {
+  width: 52px; height: 52px; border-radius: 50%; flex-shrink: 0;
+  background: var(--panel-2); display: flex; align-items: center; justify-content: center;
+  font-size: 22px; color: var(--faint); overflow: hidden;
+}
+.rh-icon img { width: 100%; height: 100%; object-fit: cover; }
+.rh-main { flex: 1; min-width: 200px; }
+.rh-mint { font-size: 11px; color: var(--faint); overflow-wrap: anywhere; margin-top: 3px; }
+.rh-sub { margin-top: 3px; }
+.rh-price { text-align: right; margin-left: auto; }
+
+.unavail { color: var(--faint); font-style: italic; font-weight: 500; }
+.unavail-block {
+  background: var(--bg); border: 1px dashed var(--line);
+  border-radius: 10px; padding: 12px; margin-top: 10px;
+}
+.unavail-title { font-size: 13px; font-weight: 700; color: var(--muted); margin-bottom: 4px; }
+
+.riskscore { display: flex; align-items: center; gap: 14px; margin: 12px 0 14px; }
+.riskscore-num { font-size: 34px; font-weight: 800; line-height: 1; }
+.riskscore-num span { font-size: 14px; color: var(--faint); font-weight: 600; }
+.riskscore-num.low { color: var(--green); }
+.riskscore-num.medium { color: var(--orange); }
+.riskscore-num.high { color: var(--red); }
+.riskscore-level { font-size: 11px; font-weight: 800; letter-spacing: .6px; color: var(--muted); margin-bottom: 3px; }
+
+.rfactor { padding: 11px 0; border-bottom: 1px dashed var(--line); }
+.rfactor:last-child { border-bottom: none; }
+.rfactor-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.rfactor-label { font-size: 13px; font-weight: 700; }
+.rfactor-right { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.rfactor-fact { font-size: 12px; color: var(--text); margin-top: 4px; line-height: 1.5; }
+.rfactor-interp { font-size: 11px; color: var(--muted); margin-top: 4px; line-height: 1.5; }
+.interp-tag {
+  display: inline-block; font-size: 9px; font-weight: 800; letter-spacing: .4px;
+  color: var(--faint); border: 1px solid var(--line); border-radius: 4px;
+  padding: 1px 5px; margin-right: 5px; text-transform: uppercase;
+}
+.rfactor-src { margin-top: 6px; }
+.fstatus {
+  font-size: 9px; font-weight: 800; letter-spacing: .3px; text-transform: uppercase;
+  padding: 2px 7px; border-radius: 5px; border: 1px solid var(--line); color: var(--muted);
+  white-space: nowrap;
+}
+.fstatus.verified { color: var(--green); border-color: rgba(46,204,113,.35); background: var(--green-soft); }
+.fstatus.reported { color: var(--accent); border-color: rgba(124,92,255,.3); }
+.fstatus.unavailable { color: var(--faint); }
+.rpoints {
+  font-size: 11px; font-weight: 800; color: var(--orange);
+  background: var(--orange-soft); border-radius: 5px; padding: 2px 6px;
+}
+
+@media (max-width: 640px) {
+  .hero h1 { font-size: 21px; }
+  .rh-price { margin-left: 0; text-align: left; width: 100%; }
+}
+
 /* ---------- provenance & verification ---------- */
 .chip.live-chip { color: var(--green); background: var(--green-soft); border-color: rgba(46,204,113,.35); }
 .chip.unver-chip { color: var(--muted); }
