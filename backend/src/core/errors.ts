@@ -19,7 +19,11 @@ export type ErrorCode =
   | "POSITION_NOT_FOUND"
   | "POSITION_ALREADY_CLOSED"
   /** No live quote could be obtained. Never substituted with a simulated one. */
-  | "QUOTE_UNAVAILABLE";
+  | "QUOTE_UNAVAILABLE"
+  // Identity and access
+  | "UNAUTHORIZED"
+  | "FORBIDDEN"
+  | "DATABASE_ERROR";
 
 export class ArbError extends Error {
   constructor(

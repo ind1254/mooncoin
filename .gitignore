@@ -29,3 +29,6 @@ DerivedData/
 
 # Local tool state
 .claude/settings.local.json
+
+# Local dev database (PGlite)
+backend/data/

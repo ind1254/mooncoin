@@ -77,8 +77,133 @@
     const h = location.hash.replace(/^#\/?/, "");
     if (h.startsWith("research/")) return { name: "research", mint: h.slice(9) };
     if (h.startsWith("token/")) return { name: "token", mint: h.slice(6) };
-    if (h === "portfolio" || h === "settings") return { name: h };
+    if (h === "portfolio" || h === "settings" || h === "watchlist" || h === "simulator") return { name: h };
     return { name: "discover" };
+  }
+
+  // ---------- session ----------
+  // The browser never asserts identity. It asks the server who it is, and the
+  // server answers from the httpOnly session cookie the page cannot read.
+  const session = { loading: true, authenticated: false, user: null, accountsEnabled: true };
+
+  async function loadSession() {
+    try {
+      const body = await api("/v1/me");
+      session.authenticated = body.authenticated;
+      session.user = body.user;
+      if (body.accountsEnabled === false) session.accountsEnabled = false;
+    } catch {
+      session.authenticated = false;
+      session.user = null;
+    } finally {
+      session.loading = false;
+      renderAccountArea();
+    }
+  }
+
+  function renderAccountArea() {
+    const el = $("accountArea");
+    if (!el) return;
+    if (session.loading) {
+      el.innerHTML = `<span class="tiny faint">…</span>`;
+      return;
+    }
+    if (!session.accountsEnabled) {
+      el.innerHTML = `<span class="tiny faint" title="This deployment has no database configured.">accounts off</span>`;
+      return;
+    }
+    el.innerHTML = session.authenticated
+      ? `<div class="account-chip" title="${esc(session.user.email)}">
+           <span class="avatar">${esc((session.user.email || "?")[0].toUpperCase())}</span>
+           <button class="linkbtn" id="signOutBtn">Sign out</button>
+         </div>`
+      : `<button class="btn" id="signInBtn" style="padding:7px 14px;font-size:13px">Sign in</button>`;
+
+    const signIn = $("signInBtn");
+    if (signIn) signIn.addEventListener("click", () => openAuthModal("signin"));
+    const signOut = $("signOutBtn");
+    if (signOut)
+      signOut.addEventListener("click", async () => {
+        await post("/v1/auth/signout").catch(() => undefined);
+        session.authenticated = false;
+        session.user = null;
+        renderAccountArea();
+        toast("Signed out");
+        render();
+      });
+  }
+
+  function openAuthModal(mode) {
+    const isSignUp = mode === "signup";
+    showModal(`
+      <h3>${isSignUp ? "Create your Moonpaper account" : "Sign in to Moonpaper"}</h3>
+      <div class="tiny muted" style="margin-top:4px">${
+        isSignUp
+          ? "You start with $100,000 in simulated paper capital. No real money, no wallet, no keys."
+          : "Your paper portfolio and watchlist are waiting."
+      }</div>
+      <div id="authErr" class="error-box hidden"></div>
+      <label class="field" style="margin-top:12px">EMAIL</label>
+      <input type="text" id="authEmail" autocomplete="email" placeholder="you@example.com">
+      <label class="field" style="margin-top:10px">PASSWORD</label>
+      <input type="password" id="authPass" autocomplete="${isSignUp ? "new-password" : "current-password"}" placeholder="At least 10 characters">
+      <div class="actions">
+        <button class="btn secondary" data-close>Cancel</button>
+        <button class="btn" id="authSubmit">${isSignUp ? "Create account" : "Sign in"}</button>
+      </div>
+      <div class="tiny faint" style="margin-top:12px;text-align:center">
+        ${isSignUp ? "Already have an account?" : "New to Moonpaper?"}
+        <button class="linkbtn" id="authSwap">${isSignUp ? "Sign in" : "Create one"}</button>
+      </div>
+      <div class="sim-notice">Moonpaper is paper trading only. It never connects a wallet, requests keys, or moves real assets.</div>
+    `);
+
+    $("authSwap").addEventListener("click", () => openAuthModal(isSignUp ? "signin" : "signup"));
+
+    const submit = async () => {
+      const email = $("authEmail").value.trim();
+      const password = $("authPass").value;
+      const err = $("authErr");
+      err.classList.add("hidden");
+      const btn = $("authSubmit");
+      btn.disabled = true;
+      btn.textContent = "Working…";
+      try {
+        const body = await post(`/v1/auth/${isSignUp ? "signup" : "signin"}`, { email, password });
+        session.authenticated = true;
+        session.user = body.user;
+        closeModal();
+        renderAccountArea();
+        toast(isSignUp ? "Account created — $100,000 paper capital ready" : "Signed in", "ok");
+        render();
+      } catch (e) {
+        err.textContent = e.message;
+        err.classList.remove("hidden");
+        btn.disabled = false;
+        btn.textContent = isSignUp ? "Create account" : "Sign in";
+      }
+    };
+
+    $("authSubmit").addEventListener("click", submit);
+    $("authPass").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") submit();
+    });
+    $("authEmail").focus();
+  }
+
+  /** Shown wherever a personal feature needs an account. */
+  function signInPrompt(what) {
+    return `
+      <div class="empty">
+        <div style="font-size:15px;font-weight:700;color:var(--text);margin-bottom:6px">Sign in to use ${esc(what)}</div>
+        <div style="max-width:420px;margin:0 auto 14px">Research, risk analysis and live quotes stay free and open to everyone. This part is personal to you, so it needs an account.</div>
+        <button class="btn" id="promptSignIn">Create an account</button>
+      </div>`;
+  }
+
+  function wireSignInPrompt() {
+    const b = $("promptSignIn");
+    if (b) b.addEventListener("click", () => openAuthModal("signup"));
   }
   window.addEventListener("hashchange", () => {
     state.route = parseHash();
@@ -645,6 +770,7 @@
             <span class="muted">${esc(d.name)}</span>
             ${d.verifiedByProvider ? `<span class="chip live-chip">LISTED</span>` : `<span class="chip unver-chip">UNLISTED</span>`}
             <span class="chip risk-${esc(risk.level)}">RISK: ${esc(risk.level.toUpperCase())}</span>
+            <button class="btn secondary" id="watchBtn" style="padding:4px 12px;font-size:12px">☆ Watch</button>
           </div>
           <div class="rh-mint mono" title="The mint address is this token's only unique identifier">${esc(d.mint)}</div>
           <div class="rh-sub tiny muted">${d.decimals} decimals · ${esc((d.tokenProgram || "unknown program").slice(0, 24))}${d.tokenProgram && d.tokenProgram.length > 24 ? "…" : ""} · identity from ${esc(sourceInfo(d.identitySource).label)}</div>
@@ -740,6 +866,22 @@
       </div>`;
 
     container.querySelector("#backBtn").addEventListener("click", () => (location.hash = "#/"));
+
+    container.querySelector("#watchBtn").addEventListener("click", async () => {
+      if (!session.authenticated) return openAuthModal("signup");
+      try {
+        await post("/v1/me/watchlist", { tokenMint: d.mint });
+        toast(`${d.symbol} added to your watchlist`, "ok");
+        const b = $("watchBtn");
+        if (b) {
+          b.textContent = "★ Watching";
+          b.disabled = true;
+        }
+      } catch (err) {
+        toast(err.message, "error");
+      }
+    });
+
     const simBtn = container.querySelector("#simBtn");
     if (simBtn) simBtn.addEventListener("click", () => (location.hash = `#/token/${d.mint}`));
 
@@ -1102,7 +1244,97 @@
     });
   }
 
-  // ---------- Portfolio ----------
+  // ---------- Portfolio (persistent, USD paper account) ----------
+  async function renderAccountPortfolio(container) {
+    if (!session.authenticated) {
+      container.innerHTML = signInPrompt("your paper portfolio");
+      return wireSignInPrompt;
+    }
+    const { portfolio: p } = await api("/v1/me/portfolio");
+    container.innerHTML = `
+      <div class="summary-strip">
+        <div class="stat"><div class="k">PAPER CASH</div><div class="v mono">$${esc(p.cashUsd)}</div><div class="s">simulated USD</div></div>
+        <div class="stat"><div class="k">INVESTED</div><div class="v mono">$${esc(p.investedUsd)}</div><div class="s">${p.openPositions} open positions</div></div>
+        <div class="stat"><div class="k">TOTAL VALUE</div><div class="v mono">$${esc(p.totalValueUsd)}</div><div class="s">started at $${esc(p.startingCashUsd)}</div></div>
+        <div class="stat"><div class="k">UNREALIZED P&amp;L</div><div class="v mono">$${esc(p.unrealizedPnlUsd)}</div><div class="s">open positions</div></div>
+        <div class="stat"><div class="k">REALIZED P&amp;L</div><div class="v mono">$${esc(p.realizedPnlUsd)}</div><div class="s">closed trades</div></div>
+      </div>
+      <div class="tiny warn" style="margin-bottom:16px">${esc(p.notice)}</div>
+
+      <div class="card">
+        <h3>Positions</h3>
+        <div class="empty" style="padding:26px 12px">
+          No positions yet.<br>
+          <span class="tiny faint">Paper execution against live Jupiter quotes is the next milestone. Until then this account holds cash only.</span>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:14px">
+        <h3>Account</h3>
+        <div class="kv"><span class="k">Signed in as</span><span class="v">${esc(session.user.email)}</span></div>
+        <div class="kv"><span class="k">Base currency</span><span class="v">${esc(p.baseCurrency)}</span></div>
+        <div class="kv"><span class="k">Opened</span><span class="v">${new Date(p.createdAtMs).toLocaleDateString()}</span></div>
+        <div class="tiny faint" style="margin-top:10px">This portfolio is stored in Moonpaper's database, so it survives sign-out, refreshes and server restarts.</div>
+      </div>`;
+  }
+
+  // ---------- Watchlist ----------
+  async function renderWatchlist(container) {
+    if (!session.authenticated) {
+      container.innerHTML = signInPrompt("your watchlist");
+      return wireSignInPrompt;
+    }
+    const list = await api("/v1/me/watchlist");
+    if (list.count === 0) {
+      container.innerHTML = `<h2>Watchlist</h2><div class="empty">Nothing saved yet.<br><span class="tiny faint">Research any token and press Watch to keep an eye on it.</span></div>`;
+      return;
+    }
+    container.innerHTML = `
+      <h2>Watchlist <span class="tiny muted">${list.count} token${list.count === 1 ? "" : "s"} · live data fetched on open</span></h2>
+      <div id="wlList"></div>`;
+
+    // Only the mint is stored, so identity and market data are resolved live
+    // rather than served from a stale copy in our database.
+    const holder = container.querySelector("#wlList");
+    for (const item of list.items) {
+      const row = document.createElement("div");
+      row.className = "opp-card";
+      row.innerHTML = `<div class="opp-main"><div class="opp-title"><span class="sym mono">${esc(item.tokenMint.slice(0, 8))}…</span><span class="muted small">loading live data…</span></div></div>`;
+      holder.appendChild(row);
+      api(`/v1/research/${encodeURIComponent(item.tokenMint)}`)
+        .then((d) => {
+          row.innerHTML = `
+            <div class="opp-main">
+              <div class="opp-title">
+                <span class="sym">${esc(d.symbol)}</span>
+                <span class="muted small">${esc(d.name)}</span>
+                <span class="chip risk-${esc(d.risk.level)}">RISK: ${esc(d.risk.level.toUpperCase())}</span>
+                ${d.verification.status === "verified" ? `<span class="chip live-chip">✓ ON-CHAIN</span>` : `<span class="chip unver-chip">UNVERIFIED</span>`}
+              </div>
+              <div class="opp-metrics mono">
+                <span>Price <b>${d.market.priceUsd ? "$" + esc(d.market.priceUsd) : "—"}</b></span>
+                <span>24h <b class="${cls(d.market.change24hPct ?? 0)}">${d.market.change24hPct !== null ? sign(d.market.change24hPct) + esc(d.market.change24hPct) + "%" : "—"}</b></span>
+                <span>Liquidity <b>${d.market.liquidityUsd ? usd(d.market.liquidityUsd) : "—"}</b></span>
+              </div>
+            </div>
+            <div class="opp-side">
+              <button class="btn secondary wl-open">Research</button>
+              <button class="btn danger wl-remove">Remove</button>
+            </div>`;
+          row.querySelector(".wl-open").addEventListener("click", () => (location.hash = `#/research/${item.tokenMint}`));
+          row.querySelector(".wl-remove").addEventListener("click", async () => {
+            await api(`/v1/me/watchlist/${encodeURIComponent(item.tokenMint)}`, { method: "DELETE" });
+            toast("Removed from watchlist");
+            render();
+          });
+        })
+        .catch(() => {
+          row.innerHTML = `<div class="opp-main"><div class="opp-title"><span class="sym mono">${esc(item.tokenMint.slice(0, 8))}…</span><span class="warn small">live data unavailable</span></div></div>`;
+        });
+    }
+  }
+
+  // ---------- Simulator portfolio (demo, SOL-denominated) ----------
   async function renderPortfolio(container) {
     const p = await api("/v1/paper/portfolio");
     const s = p.stats;
@@ -1349,7 +1581,9 @@
       let after = null;
       if (state.route.name === "research") after = await renderResearch(target, state.route.mint);
       else if (state.route.name === "token") after = await renderToken(target, state.route.mint);
-      else if (state.route.name === "portfolio") after = await renderPortfolio(target);
+      else if (state.route.name === "portfolio") after = await renderAccountPortfolio(target);
+      else if (state.route.name === "watchlist") after = await renderWatchlist(target);
+      else if (state.route.name === "simulator") after = await renderPortfolio(target);
       else if (state.route.name === "settings") after = await renderSettings(target);
       else after = await renderDiscover(target);
       if (seq !== renderSeq) return; // a newer render superseded this one
@@ -1384,6 +1618,7 @@
   }, 15_000);
 
   state.route = parseHash();
-  render();
+  // Session first: the rest of the UI depends on knowing who is asking.
+  loadSession().then(render);
   refreshNotifications();
 })();

@@ -27,8 +27,26 @@ const envSchema = z.object({
   PAPER_STARTING_SOL: z.coerce.number().positive().max(100_000).default(100),
   /** Optional: enables the legacy admin allowlist endpoints when set. */
   ADMIN_TOKEN: z.string().min(16).optional(),
-  /** Directory for local JSON state (paper positions, settings). */
+  /** Directory for local JSON state (legacy simulator + settings). */
   DATA_DIR: z.string().default("data"),
+  /**
+   * Postgres connection string. SECRET. When absent the app still runs, but
+   * accounts, portfolios and watchlists are disabled — public research and
+   * quotes keep working.
+   */
+  DATABASE_URL: z.string().min(1).optional(),
+  /** Starting paper capital for a new account, in whole USD. */
+  PAPER_STARTING_USD: z.coerce.number().positive().max(100_000_000).default(100_000),
+  /** How long a signed-in session lasts. */
+  SESSION_TTL_DAYS: z.coerce.number().int().min(1).max(365).default(30),
+  /**
+   * Send Secure cookies. Must be true in production (HTTPS); false for plain
+   * HTTP local development, where the browser would otherwise drop the cookie.
+   */
+  COOKIE_SECURE: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((v) => v === "true"),
 });
 
 export type AppEnv = z.infer<typeof envSchema>;

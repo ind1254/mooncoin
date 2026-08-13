@@ -310,6 +310,27 @@ canvas.spark { max-width: 100%; }
   .rh-price { margin-left: 0; text-align: left; width: 100%; }
 }
 
+/* ---------- account ---------- */
+.account-area { display: flex; align-items: center; flex-shrink: 0; }
+.account-chip { display: flex; align-items: center; gap: 8px; }
+.account-chip .avatar {
+  width: 28px; height: 28px; border-radius: 50%;
+  background: var(--accent-soft); color: var(--accent);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 800; border: 1px solid rgba(124,92,255,.35);
+}
+.linkbtn {
+  background: none; border: none; color: var(--accent);
+  font-size: 12px; font-weight: 700; padding: 2px 4px; cursor: pointer;
+}
+.linkbtn:hover { text-decoration: underline; }
+input[type="password"] {
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--line); border-radius: 10px;
+  padding: 9px 12px; outline: none; width: 100%;
+}
+input[type="password"]:focus { border-color: var(--accent); }
+
 /* ---------- live quote ---------- */
 .quote-card {
   margin-top: 12px; padding: 12px;

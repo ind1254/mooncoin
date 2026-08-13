@@ -32,6 +32,15 @@ import { NotificationEngine } from "../notify/engine.js";
 import { FileSettingsStore, settingsSchema, type SettingsStore, type UserSettings } from "../settings/settings.js";
 import { createLegacyArbitrageRouter } from "./legacyArbitrage.js";
 import { seedDemoState } from "./demoSeed.js";
+import { createAuthRouter } from "./authRoutes.js";
+import { PasswordAuthProvider, type AuthProvider } from "../auth/authService.js";
+import type { SqlClient } from "../db/client.js";
+import { createPgClient } from "../db/pgClient.js";
+
+/** Whole USD to micro-USD, the storage unit for all paper cash. */
+export function usdToMicroUsd(usd: number): bigint {
+  return BigInt(Math.round(usd * 1_000_000));
+}
 
 /**
  * Moonpaper — application factory.
@@ -52,6 +61,12 @@ export interface AppDeps {
   research: ResearchService;
   /** Read-only swap quotes. Never used to build or submit a transaction. */
   quotes: QuoteProvider;
+  /**
+   * Persistence for accounts and per-user state. Absent when DATABASE_URL is
+   * not configured: research and quotes still work, personal features do not.
+   */
+  db?: SqlClient | undefined;
+  auth?: AuthProvider | undefined;
 }
 
 /**
@@ -92,7 +107,15 @@ export function createDefaultDeps(overrides: Partial<AppDeps> = {}): AppDeps {
   const settings = overrides.settings ?? new FileSettingsStore(join(env.DATA_DIR, "settings.json"));
   const research = overrides.research ?? buildResearchService(env, clock, market);
   const quotes = overrides.quotes ?? new JupiterQuoteProvider({ baseUrl: env.JUPITER_QUOTE_URL, clock });
-  return { env, clock, market, engine, notify, settings, research, quotes };
+
+  // Personal features require a database. Without one the app degrades to
+  // anonymous research rather than failing to start.
+  const db = overrides.db ?? (env.DATABASE_URL ? createPgClient({ connectionString: env.DATABASE_URL }) : undefined);
+  const auth =
+    overrides.auth ??
+    (db ? new PasswordAuthProvider(db, { clock, sessionTtlMs: env.SESSION_TTL_DAYS * 86_400_000 }) : undefined);
+
+  return { env, clock, market, engine, notify, settings, research, quotes, db, auth };
 }
 
 /** In-memory settings store used by tests. */
@@ -894,6 +917,28 @@ export function createApp(deps: AppDeps): Express {
       fail(res, err);
     }
   });
+
+  // ---- Accounts and per-user state (only when a database is configured) ----
+  if (deps.db && deps.auth) {
+    app.use(
+      createAuthRouter({
+        auth: deps.auth,
+        db: deps.db,
+        startingMicroUsd: usdToMicroUsd(deps.env.PAPER_STARTING_USD),
+        clock: deps.clock,
+        secureCookies: deps.env.COOKIE_SECURE,
+      }),
+    );
+  } else {
+    // Explicit 503 beats a confusing 404 when the deployment lacks a database.
+    app.use("/v1/auth", (_req, res) => {
+      res.status(503).json({
+        error: "DATABASE_ERROR",
+        message: "Accounts are not available: this deployment has no database configured.",
+      });
+    });
+    app.get("/v1/me", (_req, res) => res.json({ authenticated: false, user: null, accountsEnabled: false }));
+  }
 
   // ---- Legacy arbitrage calculator (original add-on, kept working) ----
   app.use(createLegacyArbitrageRouter(deps.env.QUOTE_MODE === "mock", deps.env.ADMIN_TOKEN));
