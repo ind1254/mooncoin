@@ -22,7 +22,10 @@ import { createLegacyArbitrageRouter } from "./legacyArbitrage.js";
 import { seedDemoState } from "./demoSeed.js";
 import { createAuthRouter } from "./authRoutes.js";
 import { PasswordAuthProvider } from "../auth/authService.js";
-import { createPgClient } from "../db/pgClient.js";
+// NOTE: the Postgres driver is NOT imported here. A static top-level import
+// makes the whole application unloadable if the driver is missing from the
+// deployed bundle — which is exactly the outage this comment exists to
+// prevent a repeat of. It is loaded dynamically in initPersistence().
 /** Whole USD to micro-USD, the storage unit for all paper cash. */
 export function usdToMicroUsd(usd) {
     return BigInt(Math.round(usd * 1_000_000));
@@ -56,12 +59,70 @@ export function createDefaultDeps(overrides = {}) {
     const settings = overrides.settings ?? new FileSettingsStore(join(env.DATA_DIR, "settings.json"));
     const research = overrides.research ?? buildResearchService(env, clock, market);
     const quotes = overrides.quotes ?? new JupiterQuoteProvider({ baseUrl: env.JUPITER_QUOTE_URL, clock });
-    // Personal features require a database. Without one the app degrades to
-    // anonymous research rather than failing to start.
-    const db = overrides.db ?? (env.DATABASE_URL ? createPgClient({ connectionString: env.DATABASE_URL }) : undefined);
-    const auth = overrides.auth ??
-        (db ? new PasswordAuthProvider(db, { clock, sessionTtlMs: env.SESSION_TTL_DAYS * 86_400_000 }) : undefined);
-    return { env, clock, market, engine, notify, settings, research, quotes, db, auth };
+    // Persistence is attached later by initPersistence(). Constructing it here
+    // would require importing the Postgres driver at module scope, and a driver
+    // that fails to resolve would take the entire application down with it.
+    return { env, clock, market, engine, notify, settings, research, quotes, db: overrides.db, auth: overrides.auth };
+}
+// Probing the database on every /health call would turn a health check into a
+// load generator, so results are cached briefly.
+const healthCache = new WeakMap();
+const HEALTH_TTL_MS = 10_000;
+/**
+ * Attach persistence, loading the driver dynamically.
+ *
+ * Any failure here — driver missing from the bundle, unreachable database,
+ * bad connection string — degrades the personal subsystem only. Public
+ * research keeps serving, which is the whole point of the separation.
+ */
+export async function initPersistence(deps) {
+    if (deps.db || !deps.env.DATABASE_URL)
+        return;
+    try {
+        const { createPgClient } = await import("../db/pgClient.js");
+        const db = createPgClient({ connectionString: deps.env.DATABASE_URL });
+        deps.db = db;
+        deps.auth = new PasswordAuthProvider(db, {
+            clock: deps.clock,
+            sessionTtlMs: deps.env.SESSION_TTL_DAYS * 86_400_000,
+        });
+    }
+    catch (err) {
+        // Never include the connection string: it carries credentials.
+        deps.persistenceError = err instanceof Error ? err.message : "unknown error";
+        console.error(JSON.stringify({
+            msg: "persistence unavailable; personal features disabled, public research unaffected",
+            error: deps.persistenceError,
+        }));
+    }
+}
+/** Cheap liveness probe that also distinguishes "connected" from "migrated". */
+export async function checkPersistence(deps) {
+    if (!deps.db) {
+        return deps.env.DATABASE_URL
+            ? { status: "unavailable", ...(deps.persistenceError ? { detail: deps.persistenceError } : {}) }
+            : { status: "unconfigured" };
+    }
+    const cached = healthCache.get(deps);
+    if (cached && Date.now() - cached.checkedAtMs < HEALTH_TTL_MS) {
+        const { checkedAtMs: _ignored, ...health } = cached;
+        return health;
+    }
+    let health;
+    try {
+        // Touching schema_migrations proves both connectivity AND that migrations
+        // have run. A reachable database with no tables is not a healthy one.
+        await deps.db.query("select 1 from schema_migrations limit 1");
+        health = { status: "ok" };
+    }
+    catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        health = /relation .* does not exist|undefined_table/i.test(message)
+            ? { status: "schema_missing", detail: "Run database migrations (npm run migrate)." }
+            : { status: "unavailable", detail: "Database connection failed." };
+    }
+    healthCache.set(deps, { ...health, checkedAtMs: Date.now() });
+    return health;
 }
 /** In-memory settings store used by tests. */
 export class InMemorySettingsStore {
@@ -393,8 +454,28 @@ export function createApp(deps) {
         dataSource: deps_.market.bundle.dataSourceLabel,
         isDemoData: deps_.market.bundle.isDemo,
     });
-    app.get("/health", (_req, res) => {
-        res.json({ ok: true, ...meta(deps) });
+    /**
+     * Diagnostic health check.
+     *
+     * Always 200 when the process is alive and serving: a degraded database must
+     * not make uptime monitors report the whole app down, because public
+     * research still works. The body carries the detail, and `degraded` is the
+     * flag to alert on. Deliberately does NOT call market providers — a health
+     * check must never fan out to third parties on every request.
+     */
+    app.get("/health", async (_req, res) => {
+        const persistence = await checkPersistence(deps);
+        const degraded = persistence.status !== "ok" && persistence.status !== "unconfigured";
+        res.status(200).json({
+            app: "ok",
+            database: persistence.status,
+            // "ok" only when we proved migrations ran; unknown when we cannot reach it.
+            migrations: persistence.status === "ok" ? "ok" : persistence.status === "schema_missing" ? "missing" : "unknown",
+            accountsEnabled: Boolean(deps.db && deps.auth) && persistence.status === "ok",
+            degraded,
+            ...(persistence.detail ? { detail: persistence.detail } : {}),
+            ...meta(deps),
+        });
     });
     app.get("/v1/meta", async (_req, res) => {
         try {
@@ -803,26 +884,16 @@ export function createApp(deps) {
             fail(res, err);
         }
     });
-    // ---- Accounts and per-user state (only when a database is configured) ----
-    if (deps.db && deps.auth) {
-        app.use(createAuthRouter({
-            auth: deps.auth,
-            db: deps.db,
-            startingMicroUsd: usdToMicroUsd(deps.env.PAPER_STARTING_USD),
-            clock: deps.clock,
-            secureCookies: deps.env.COOKIE_SECURE,
-        }));
-    }
-    else {
-        // Explicit 503 beats a confusing 404 when the deployment lacks a database.
-        app.use("/v1/auth", (_req, res) => {
-            res.status(503).json({
-                error: "DATABASE_ERROR",
-                message: "Accounts are not available: this deployment has no database configured.",
-            });
-        });
-        app.get("/v1/me", (_req, res) => res.json({ authenticated: false, user: null, accountsEnabled: false }));
-    }
+    // ---- Accounts and per-user state ----
+    // Mounted unconditionally and resolved per request, so persistence can come
+    // back without a redeploy and a missing database yields an explicit 503
+    // rather than a 404 or an opaque 500.
+    app.use(createAuthRouter({
+        getAuth: () => deps.auth,
+        getDb: () => deps.db,
+        startingMicroUsd: usdToMicroUsd(deps.env.PAPER_STARTING_USD),
+        secureCookies: deps.env.COOKIE_SECURE,
+    }));
     // ---- Legacy arbitrage calculator (original add-on, kept working) ----
     app.use(createLegacyArbitrageRouter(deps.env.QUOTE_MODE === "mock", deps.env.ADMIN_TOKEN));
     // ---- Static frontends ----

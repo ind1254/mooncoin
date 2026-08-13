@@ -32,6 +32,11 @@ input, select { font: inherit; }
 a { color: var(--accent); text-decoration: none; }
 
 /* ---------- shell ---------- */
+.banner.banner-error {
+  background: var(--red-soft);
+  border-bottom-color: rgba(255, 93, 93, 0.4);
+  color: var(--red);
+}
 .banner {
   background: var(--orange-soft);
   border-bottom: 1px solid rgba(245, 166, 35, 0.35);

@@ -13,6 +13,11 @@ import { PortfolioRepository, WatchlistRepository } from "../db/repositories.js"
  * scoping queries to the verified session's user id.
  */
 export const SESSION_COOKIE = "mp_session";
+/**
+ * One message for every persistence outage. It names what is broken and what
+ * still works, so a user is not left assuming the whole product is down.
+ */
+const PERSISTENCE_DOWN_MESSAGE = "Account services are temporarily unavailable. Research and quotes are unaffected.";
 /** Minimal cookie parsing — avoids a dependency for one header. */
 function readCookie(req, name) {
     const header = req.headers.cookie;
@@ -81,21 +86,60 @@ function serializePortfolio(p) {
         notice: "Paper trading only. This is simulated capital, not real money.",
     };
 }
+/**
+ * A database error must not surface as a generic 500. Callers need to know
+ * the difference between "you sent something wrong" and "our storage is
+ * temporarily down", and neither should ever leak SQL to the browser.
+ */
+function toSafeError(err) {
+    const e = asArbError(err);
+    if (e.code !== "INTERNAL_ERROR")
+        return e;
+    const message = err instanceof Error ? err.message : String(err);
+    if (/relation .* does not exist|undefined_table/i.test(message)) {
+        return new ArbError("DATABASE_ERROR", "Account services are temporarily unavailable.", 503);
+    }
+    if (/ECONNREFUSED|ETIMEDOUT|ENOTFOUND|connection|terminated|SASL|password authentication/i.test(message)) {
+        return new ArbError("DATABASE_ERROR", "Account services are temporarily unavailable.", 503);
+    }
+    return e;
+}
 export function createAuthRouter(options) {
     const router = express.Router();
-    const { auth, db, startingMicroUsd, secureCookies } = options;
-    const portfolios = new PortfolioRepository(db);
-    const watchlist = new WatchlistRepository(db);
+    const { getAuth, getDb, startingMicroUsd, secureCookies } = options;
     const fail = (res, err) => {
-        const e = asArbError(err);
+        const e = toSafeError(err);
+        if (e.httpStatus >= 500) {
+            // Full detail server-side; nothing sensitive to the client.
+            console.error(JSON.stringify({ msg: "account request failed", code: e.code, error: e.message }));
+        }
         res.status(e.httpStatus).json({
             error: e.code,
             message: e.message,
             details: e.details ?? null,
         });
     };
+    /** 503 when persistence is unavailable, so the reason is never guessed at. */
+    const requirePersistence = (_req, res, next) => {
+        if (!getDb() || !getAuth()) {
+            res.status(503).json({
+                error: "DATABASE_ERROR",
+                message: PERSISTENCE_DOWN_MESSAGE,
+            });
+            return;
+        }
+        next();
+    };
     /** Rejects anonymous callers; attaches the verified user to res.locals. */
     const requireAuth = async (req, res, next) => {
+        const auth = getAuth();
+        if (!auth) {
+            res.status(503).json({
+                error: "DATABASE_ERROR",
+                message: PERSISTENCE_DOWN_MESSAGE,
+            });
+            return;
+        }
         const user = await resolveUser(req, auth);
         if (!user) {
             res.status(401).json({ error: "UNAUTHORIZED", message: "Sign in to access this." });
@@ -106,15 +150,15 @@ export function createAuthRouter(options) {
     };
     const currentUser = (res) => res.locals.user;
     // ---- Identity ----
-    router.post("/v1/auth/signup", async (req, res) => {
+    router.post("/v1/auth/signup", requirePersistence, async (req, res) => {
         try {
             const parsed = credentialsSchema.safeParse(req.body);
             if (!parsed.success) {
                 throw new ArbError("VALIDATION_ERROR", "Enter a valid email and a password of at least 10 characters", 400);
             }
-            const session = await auth.signUp(parsed.data.email, parsed.data.password);
+            const session = await getAuth().signUp(parsed.data.email, parsed.data.password);
             // Fund the portfolio immediately so the account is never half-created.
-            await portfolios.ensureDefault(session.user.id, startingMicroUsd);
+            await new PortfolioRepository(getDb()).ensureDefault(session.user.id, startingMicroUsd);
             setSessionCookie(res, session.token, session.expiresAtMs, secureCookies);
             console.log(JSON.stringify({ msg: "account created", userId: session.user.id }));
             res.status(201).json({ user: { id: session.user.id, email: session.user.email } });
@@ -123,13 +167,13 @@ export function createAuthRouter(options) {
             fail(res, err);
         }
     });
-    router.post("/v1/auth/signin", async (req, res) => {
+    router.post("/v1/auth/signin", requirePersistence, async (req, res) => {
         try {
             const parsed = credentialsSchema.safeParse(req.body);
             if (!parsed.success) {
                 throw new ArbError("UNAUTHORIZED", "Email or password is incorrect", 401);
             }
-            const session = await auth.signIn(parsed.data.email, parsed.data.password);
+            const session = await getAuth().signIn(parsed.data.email, parsed.data.password);
             setSessionCookie(res, session.token, session.expiresAtMs, secureCookies);
             res.json({ user: { id: session.user.id, email: session.user.email } });
         }
@@ -143,16 +187,34 @@ export function createAuthRouter(options) {
     });
     router.post("/v1/auth/signout", async (req, res) => {
         const token = readCookie(req, SESSION_COOKIE);
-        if (token)
+        const auth = getAuth();
+        if (token && auth)
             await auth.signOut(token).catch(() => undefined);
+        // Always clear the cookie: signing out must work even if storage is down.
         clearSessionCookie(res, secureCookies);
         res.json({ ok: true });
     });
-    /** Session probe for the frontend. Public: anonymous is a valid answer. */
+    /**
+     * Session probe for the frontend. Public and never 500s: "anonymous" and
+     * "accounts unavailable" are both valid answers the UI needs to render.
+     */
     router.get("/v1/me", async (req, res) => {
-        const user = await resolveUser(req, auth);
+        const auth = getAuth();
+        if (!auth) {
+            res.json({ authenticated: false, user: null, accountsEnabled: false });
+            return;
+        }
+        let user = null;
+        try {
+            user = await resolveUser(req, auth);
+        }
+        catch {
+            res.json({ authenticated: false, user: null, accountsEnabled: false });
+            return;
+        }
         res.json({
             authenticated: user !== null,
+            accountsEnabled: true,
             user: user ? { id: user.id, email: user.email } : null,
         });
     });
@@ -162,7 +224,7 @@ export function createAuthRouter(options) {
             const user = currentUser(res);
             // Lazily created, so an account made before portfolios existed still
             // works, and repeated calls cannot fund it twice.
-            const portfolio = await portfolios.ensureDefault(user.id, startingMicroUsd);
+            const portfolio = await new PortfolioRepository(getDb()).ensureDefault(user.id, startingMicroUsd);
             res.json({ portfolio: serializePortfolio(portfolio) });
         }
         catch (err) {
@@ -171,7 +233,7 @@ export function createAuthRouter(options) {
     });
     router.get("/v1/me/watchlist", requireAuth, async (_req, res) => {
         try {
-            const items = await watchlist.list(currentUser(res).id);
+            const items = await new WatchlistRepository(getDb()).list(currentUser(res).id);
             res.json({
                 count: items.length,
                 // Mint only. Market data is fetched live; the database stores intent,
@@ -190,7 +252,7 @@ export function createAuthRouter(options) {
             if (!parsed.success) {
                 throw new ArbError("VALIDATION_ERROR", "A valid token mint address is required", 400);
             }
-            await watchlist.add(currentUser(res).id, parsed.data.tokenMint);
+            await new WatchlistRepository(getDb()).add(currentUser(res).id, parsed.data.tokenMint);
             res.status(201).json({ ok: true, tokenMint: parsed.data.tokenMint });
         }
         catch (err) {
@@ -199,7 +261,7 @@ export function createAuthRouter(options) {
     });
     router.delete("/v1/me/watchlist/:mint", requireAuth, async (req, res) => {
         try {
-            const removed = await watchlist.remove(currentUser(res).id, req.params.mint);
+            const removed = await new WatchlistRepository(getDb()).remove(currentUser(res).id, req.params.mint);
             res.json({ ok: true, removed });
         }
         catch (err) {

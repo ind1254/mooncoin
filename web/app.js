@@ -32,12 +32,21 @@
     setTimeout(() => t.remove(), 4200);
   }
 
+  // A local developer can fix a stopped server; a visitor to the deployed app
+  // cannot, so the two situations must never share an error message.
+  const isLocalDev = () => ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
+
+  const UNREACHABLE = () =>
+    isLocalDev()
+      ? "Backend offline — start the local backend with: npm run dev"
+      : "Moonpaper's server is unreachable. Please try again in a moment.";
+
   async function api(path, options) {
     let res;
     try {
       res = await fetch(path, options);
     } catch {
-      throw new Error("Cannot reach the local backend — is it running? (npm run dev in backend/)");
+      throw new Error(UNREACHABLE());
     }
     let body = null;
     try {
@@ -46,9 +55,15 @@
       /* no body */
     }
     if (!res.ok) {
-      const msg = body?.message || `Request failed (${res.status})`;
-      const err = new Error(msg);
+      // Server-side faults get a human sentence rather than a bare status
+      // code, and never expose internals.
+      const fallback =
+        res.status >= 500
+          ? "Moonpaper's server is having trouble right now. Please try again shortly."
+          : `Request failed (${res.status})`;
+      const err = new Error(body?.message || fallback);
       err.code = body?.error;
+      err.status = res.status;
       throw err;
     }
     return body;
@@ -1516,6 +1531,9 @@
 
   // ---------- notifications drawer ----------
   async function refreshNotifications() {
+    // Never fetch while the backend is known-unhealthy: the poll loop owns
+    // recovery, and this must not become a second, unbounded retry path.
+    if (poll.failures > 0) return;
     try {
       const body = await api("/v1/notifications");
       const badge = $("notifBadge");
@@ -1597,25 +1615,92 @@
     }
   }
 
-  // Update the banner with the backend's own data-source label
-  api("/v1/meta")
-    .then((m) => {
-      $("dataBanner").textContent = `PAPER TRADING PROTOTYPE — ${m.dataSource} · all trades simulated · live execution disabled`;
-    })
-    .catch(() => {
-      $("dataBanner").textContent = "BACKEND OFFLINE — start it with: cd backend && npm run dev";
-    });
+  // ---------- health-aware polling ----------
+  // A failing backend must not be hammered. Consecutive failures back off
+  // exponentially and recover immediately on the first success, so an outage
+  // produces a handful of requests rather than one every 15 seconds forever.
+  const BASE_POLL_MS = 15_000;
+  const MAX_POLL_MS = 300_000; // 5 minutes
+  const poll = { failures: 0, timer: null, stopped: false };
 
-  // Gentle auto-refresh that never fights the user
-  setInterval(() => {
-    const el = document.activeElement;
-    const typing = el && (el.tagName === "INPUT" || el.tagName === "SELECT" || el.tagName === "TEXTAREA");
-    // Never re-render under an open search panel or on the research page:
-    // it would discard typed input and re-hit external providers on a timer.
-    const busy = state.modalOpen || typing || search.open || state.route.name === "settings" || state.route.name === "research";
-    if (!busy) render();
-    refreshNotifications();
-  }, 15_000);
+  function nextDelayMs() {
+    if (poll.failures === 0) return BASE_POLL_MS;
+    return Math.min(BASE_POLL_MS * 2 ** poll.failures, MAX_POLL_MS);
+  }
+
+  function setBanner(text, unhealthy) {
+    const el = $("dataBanner");
+    if (!el) return;
+    el.textContent = text;
+    el.classList.toggle("banner-error", Boolean(unhealthy));
+  }
+
+  /** Single source of truth for "is the backend usable right now?". */
+  async function checkHealth() {
+    try {
+      const h = await api("/health");
+      poll.failures = 0;
+      if (h.degraded) {
+        setBanner(
+          h.database === "schema_missing"
+            ? "Account services unavailable — the database is not initialized. Research and quotes still work."
+            : "Account services are temporarily unavailable. Research and quotes still work.",
+          true,
+        );
+      } else {
+        setBanner(
+          `PAPER TRADING PROTOTYPE — ${h.dataSource} · all trades simulated · live execution disabled`,
+          false,
+        );
+      }
+      return true;
+    } catch (err) {
+      poll.failures++;
+      setBanner(
+        err.status >= 500
+          ? "Moonpaper's server is having trouble. Retrying automatically…"
+          : UNREACHABLE(),
+        true,
+      );
+      return false;
+    }
+  }
+
+  function scheduleNextPoll() {
+    if (poll.stopped) return;
+    clearTimeout(poll.timer);
+    poll.timer = setTimeout(runPollCycle, nextDelayMs());
+  }
+
+  async function runPollCycle() {
+    const healthy = await checkHealth();
+    // Only do further work when the backend can actually serve it. This is
+    // what stops a dead backend from generating a request storm.
+    if (healthy) {
+      const el = document.activeElement;
+      const typing = el && (el.tagName === "INPUT" || el.tagName === "SELECT" || el.tagName === "TEXTAREA");
+      const busy =
+        state.modalOpen || typing || search.open || state.route.name === "settings" || state.route.name === "research";
+      if (!busy) render();
+      refreshNotifications();
+    }
+    scheduleNextPoll();
+  }
+
+  // Retry promptly when the user returns to the tab or regains connectivity,
+  // instead of waiting out a long backoff.
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && poll.failures > 0) {
+      poll.failures = 0;
+      scheduleNextPoll();
+    }
+  });
+  window.addEventListener("online", () => {
+    poll.failures = 0;
+    scheduleNextPoll();
+  });
+
+  checkHealth().then(scheduleNextPoll);
 
   state.route = parseHash();
   // Session first: the rest of the UI depends on knowing who is asking.

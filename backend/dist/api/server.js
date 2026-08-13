@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { createApp, createDefaultDeps, runNotificationTick, seedIfDemo } from "./app.js";
+import { createApp, createDefaultDeps, initPersistence, runNotificationTick, seedIfDemo } from "./app.js";
 /**
  * Moonpaper — server entry point.
  * Paper trading only: no execution path exists anywhere in this process.
@@ -8,6 +8,9 @@ import { createApp, createDefaultDeps, runNotificationTick, seedIfDemo } from ".
 if (process.argv.includes("--live"))
     process.env.MARKET_MODE = "live";
 const deps = createDefaultDeps();
+// Attaches Postgres when DATABASE_URL is set. Failures degrade the personal
+// subsystem only; public research keeps serving.
+await initPersistence(deps);
 // Local development convenience: with no DATABASE_URL, fall back to a
 // file-backed PGlite so accounts work offline with real Postgres semantics.
 // Production always sets DATABASE_URL and never takes this path.
