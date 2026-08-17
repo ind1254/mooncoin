@@ -11,7 +11,13 @@ import { migrate } from "./migrate.js";
 
 const env = loadEnv();
 if (!env.DATABASE_URL) {
-  console.error("DATABASE_URL is not set. Nothing to migrate.");
+  const optional = process.argv.includes("--if-configured");
+  const message = "DATABASE_URL is not set. Nothing to migrate.";
+  if (optional) {
+    console.log(message);
+    process.exit(0);
+  }
+  console.error(message);
   process.exit(1);
 }
 

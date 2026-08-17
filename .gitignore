@@ -32,3 +32,5 @@ DerivedData/
 
 # Local dev database (PGlite)
 backend/data/
+
+.vercel

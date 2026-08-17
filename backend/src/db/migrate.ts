@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { SqlClient } from "./client.js";
@@ -19,7 +19,14 @@ import type { SqlClient } from "./client.js";
  * rejected here so an accidental data-losing migration cannot ship silently.
  */
 
-const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), "migrations");
+const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
+const BUILT_MIGRATIONS_DIR = join(MODULE_DIR, "migrations");
+// TypeScript does not copy .sql assets into dist. Production runs the committed
+// JS during Vercel's install phase, so fall back to the source-owned migration
+// directory while keeping tsx/local execution on the adjacent directory.
+const MIGRATIONS_DIR = existsSync(BUILT_MIGRATIONS_DIR)
+  ? BUILT_MIGRATIONS_DIR
+  : join(MODULE_DIR, "..", "..", "src", "db", "migrations");
 const DESTRUCTIVE = /\b(drop\s+(table|column|database|schema)|truncate)\b/i;
 
 export interface MigrationResult {
