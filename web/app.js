@@ -77,6 +77,7 @@
     route: { name: "discover" },
     settings: null,
     filters: { search: "", risk: "", minLiquidityUsd: "", tradeSizeSol: null, feedKind: "recent" },
+    gateReports: new Map(),
     modalOpen: false,
   };
 
@@ -264,6 +265,45 @@
   function sourceBadge(source) {
     const s = sourceInfo(source);
     return `<span class="src ${s.live ? "live" : "sim"}" title="${esc(s.hint)}"><i></i>${esc(s.label)}</span>`;
+  }
+
+  function gateReportHtml(report, compact = false) {
+    const quoteExpired = Boolean(report.quote && Date.now() >= report.quote.expiresAtMs);
+    const displayVerdict = quoteExpired && report.verdict !== "blocked" ? "expired" : report.verdict;
+    const verdict = quoteExpired
+      ? report.verdict === "blocked"
+        ? "BLOCKED · QUOTE EXPIRED"
+        : "EXPIRED — RUN AGAIN"
+      : report.verdict === "eligible"
+        ? "ELIGIBLE"
+        : report.verdict === "blocked"
+          ? "BLOCKED"
+          : "NEEDS VERIFICATION";
+    const gates = report.gates
+      .map((g) => {
+        const status = quoteExpired && (g.id === "jupiter_route" || g.id === "price_impact") ? "unavailable" : g.status;
+        const detail =
+          quoteExpired && (g.id === "jupiter_route" || g.id === "price_impact")
+            ? "The underlying route quote expired; run the check again."
+            : g.detail;
+        const icon = status === "pass" ? "✓" : status === "fail" ? "✕" : status === "warning" ? "!" : "?";
+        return `<div class="gate-row ${esc(status)}">
+          <span class="gate-icon">${icon}</span>
+          <span class="gate-copy"><b>${esc(g.label)}</b><small>${esc(detail)}</small></span>
+          ${sourceBadge(g.source)}
+        </div>`;
+      })
+      .join("");
+    const route = report.quote
+      ? `<div class="gate-route mono">${esc(report.quote.input)} → ${esc(report.quote.output)} · impact ${esc(report.quote.priceImpactPct)}% · ${report.quote.route.map((r) => esc(r.venue)).join(" → ")}</div>`
+      : `<div class="gate-route muted">No verified live route is available in this check.</div>`;
+    return `<div class="gate-report ${esc(displayVerdict)} ${compact ? "compact" : ""}">
+      <div class="gate-report-head"><span class="gate-verdict">${verdict}</span><span class="tiny muted">checked ${ago(report.checkedAtMs)}</span></div>
+      <div class="gate-summary">${quoteExpired ? `${esc(report.summary)} The route quote has expired; run the production check again before relying on it.` : esc(report.summary)}</div>
+      ${gates}
+      ${route}
+      <div class="tiny faint gate-policy">Policy: ≥${usd(report.policy.minLiquidityUsd)} liquidity · ≤${esc(report.policy.maxPriceImpactPct)}% impact · market data ≤${esc(report.policy.maxMarketAgeSeconds)}s old. Read-only check; no transaction is sent.</div>
+    </div>`;
   }
 
   /** The six verification states, in user-facing language. */
@@ -646,7 +686,7 @@
           <option value="250000" ${state.filters.minLiquidityUsd === "250000" ? "selected" : ""}>$250k+</option>
           <option value="1000000" ${state.filters.minLiquidityUsd === "1000000" ? "selected" : ""}>$1M+</option>
         </select></div>
-        <div class="feed-source">${sourceBadge(feed.source)}<span class="tiny muted">Catalog presence is not proof of an executable route.</span></div>
+        <div class="feed-source">${sourceBadge(feed.source)}<span class="tiny muted">Production floor: ${usd(feed.policy.minLiquidityUsd)} liquidity · ${esc(feed.policy.maxPriceImpactPct)}% max impact · ${esc(feed.policy.maxMarketAgeSeconds)}s max market age.</span></div>
       </div>
 
       <div id="liveFeedList">${feed.tokens.length ? "" : `<div class="empty">No live tokens match these filters.</div>`}</div>
@@ -695,7 +735,7 @@
     const liquidity = token.liquidityUsd == null ? "not reported" : usd(token.liquidityUsd);
     const vol5m = token.fiveMinuteVolumeUsd == null ? "—" : usd(token.fiveMinuteVolumeUsd);
     const change5m = token.stats5m.priceChangePct;
-    const statusLabel = assessment.status === "active" ? "MARKET ACTIVE" : assessment.status === "thin" ? "THIN" : "DETECTED";
+    const statusLabel = assessment.status === "active" ? "CATALOG READY" : assessment.status === "thin" ? "THIN" : assessment.status === "stale" ? "STALE" : "DETECTED";
     const warnings = (assessment.warnings || [])
       .slice(0, 3)
       .map((warning) => `<span class="fx negative">${esc(warning)}</span>`)
@@ -703,6 +743,7 @@
     const icon = token.iconUrl
       ? `<img src="${esc(token.iconUrl)}" alt="" loading="lazy" referrerpolicy="no-referrer">`
       : `<span aria-hidden="true">◉</span>`;
+    const storedGateReport = state.gateReports.get(token.mint);
 
     div.innerHTML = `
       <div class="opp-emoji token-icon">${icon}</div>
@@ -723,18 +764,44 @@
         </div>
         <div class="opp-why">${warnings || `<span class="fx positive">No immediate catalog warnings</span>`}</div>
         <div class="eligibility tiny muted">${esc(assessment.eligibility)}</div>
+        <div class="gate-check-out">${storedGateReport ? gateReportHtml(storedGateReport, true) : ""}</div>
       </div>
       <div class="opp-side">
         <div class="opp-score"><div class="n">${assessment.qualityScore}</div><div class="d">RESEARCH / 100</div></div>
         ${freshness(token.updatedAgeSeconds ?? 999, token.reliability)}
-        <div class="row">
+        <div class="row" style="flex-wrap:wrap;justify-content:flex-end">
           <button class="star ${token.inWatchlist ? "active" : ""}" title="Watchlist" aria-label="Toggle watchlist">★</button>
+          <button class="btn secondary sm-gates">${storedGateReport ? "Check again" : "Check $100 eligibility"}</button>
           <button class="btn sm-research">Research + live quote</button>
         </div>
       </div>
     `;
 
     div.querySelector(".sm-research").addEventListener("click", () => (location.hash = `#/research/${token.mint}`));
+    div.querySelector(".sm-gates").addEventListener("click", async (event) => {
+      const button = event.currentTarget;
+      const out = div.querySelector(".gate-check-out");
+      button.disabled = true;
+      button.textContent = "Checking…";
+      out.innerHTML = `<div class="sstate"><div class="spinner"></div>Verifying route and chain…</div>`;
+      try {
+        const report = await api(`/v1/tradability/${encodeURIComponent(token.mint)}?amountUsd=100&slippageBps=50`);
+        state.gateReports.set(token.mint, report);
+        out.innerHTML = gateReportHtml(report, true);
+        button.textContent = "Check again";
+        if (report.quote) {
+          setTimeout(() => {
+            if (out.isConnected) out.innerHTML = gateReportHtml(report, true);
+          }, Math.max(0, report.quote.expiresAtMs - Date.now()) + 100);
+        }
+      } catch (err) {
+        out.innerHTML = `<div class="unavail-block"><div class="unavail-title">Eligibility check unavailable</div><div class="tiny muted">${esc(err.message)}</div></div>`;
+        button.textContent = "Retry eligibility";
+      } finally {
+        button.disabled = false;
+      }
+      event.stopPropagation();
+    });
     div.querySelector(".star").addEventListener("click", async (event) => {
       if (!session.authenticated) {
         openAuthModal("signup");
@@ -942,13 +1009,15 @@
           </div>
 
           <div class="card">
-            <h3>Simulate a buy</h3>
-            <div class="tiny muted" style="margin-top:4px">Moonpaper requests a real, read-only Jupiter quote to show what this trade would return right now.</div>
+            <h3>Production eligibility &amp; live quote</h3>
+            <div class="tiny muted" style="margin-top:4px">Run every production gate for this mint and exact USDC size, or request the raw read-only Jupiter quote by itself.</div>
             <label class="field" style="margin-top:12px">AMOUNT (USDC)</label>
-            <div class="row">
+            <div class="row" style="flex-wrap:wrap">
               <input type="text" id="quoteAmt" value="100" inputmode="decimal" placeholder="100">
+              <button class="btn" id="eligibilityBtn" style="white-space:nowrap">Run production check</button>
               <button class="btn" id="quoteBtn" style="white-space:nowrap">Get quote</button>
             </div>
+            <div id="eligibilityOut"></div>
             <div id="quoteOut"></div>
             ${
               d.simulation.available
@@ -982,6 +1051,32 @@
 
     const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
     let quoteTimer = null;
+    let eligibilityTimer = null;
+
+    async function runEligibility() {
+      const out = $("eligibilityOut");
+      const button = $("eligibilityBtn");
+      const amt = $("quoteAmt").value.trim();
+      button.disabled = true;
+      button.textContent = "Checking…";
+      clearInterval(eligibilityTimer);
+      out.innerHTML = `<div class="sstate"><div class="spinner"></div>Checking market freshness, liquidity, ticker ambiguity, mint authorities, route, and impact…</div>`;
+      try {
+        const params = new URLSearchParams({ amountUsd: amt, slippageBps: "50" });
+        const report = await api(`/v1/tradability/${encodeURIComponent(d.mint)}?${params}`);
+        out.innerHTML = gateReportHtml(report);
+        eligibilityTimer = setInterval(() => {
+          const current = $("eligibilityOut");
+          if (!current) return clearInterval(eligibilityTimer);
+          current.innerHTML = gateReportHtml(report);
+        }, 1_000);
+      } catch (err) {
+        out.innerHTML = `<div class="unavail-block"><div class="unavail-title">Production check unavailable</div><div class="tiny muted">${esc(err.message)}</div></div>`;
+      } finally {
+        button.disabled = false;
+        button.textContent = "Run production check";
+      }
+    }
 
     async function getQuote() {
       // Document lookups, not container lookups: render() moves these nodes
@@ -1045,8 +1140,9 @@
     }
 
     container.querySelector("#quoteBtn").addEventListener("click", getQuote);
+    container.querySelector("#eligibilityBtn").addEventListener("click", runEligibility);
     container.querySelector("#quoteAmt").addEventListener("keydown", (e) => {
-      if (e.key === "Enter") getQuote();
+      if (e.key === "Enter") runEligibility();
     });
   }
 

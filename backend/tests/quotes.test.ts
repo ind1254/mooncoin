@@ -109,6 +109,20 @@ describe("quote provider", () => {
     expect(calls).toBe(0);
   });
 
+  it("sends the optional production API key only from the server", async () => {
+    let header = "";
+    const provider = new JupiterQuoteProvider({
+      apiKey: "test-jupiter-key",
+      clock: () => START,
+      fetchImpl: async (_input, init) => {
+        header = new Headers(init?.headers).get("x-api-key") ?? "";
+        return serveQuote();
+      },
+    });
+    await provider.getQuote(req());
+    expect(header).toBe("test-jupiter-key");
+  });
+
   it("reports no route as QUOTE_UNAVAILABLE rather than falling back", async () => {
     const p = quoteProvider(() => new Response("{}", { status: 400 }));
     await expect(p.getQuote(req())).rejects.toMatchObject({ code: "QUOTE_UNAVAILABLE" });

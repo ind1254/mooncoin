@@ -57,6 +57,8 @@ export interface ResearchProfile {
   verifiedByProvider: boolean;
   identitySource: string;
   marketSource: string;
+  /** Provider observation time used by the stale-market-data gate. */
+  marketUpdatedAtMs: number | null;
   market: DiscoveredMarketFacts;
   /** Always present: an unreadable chain yields an "unavailable" record. */
   verification: OnChainMintVerification;
@@ -331,18 +333,22 @@ export class ResearchService {
       throw new ArbError("TOKEN_NOT_ALLOWED", "No token found for that mint address", 404);
     }
 
-    const checkedAtMs = this.clock();
+    const requestedAtMs = this.clock();
     let mintRead: MintReadResult | null = null;
     let verification: OnChainMintVerification;
 
     try {
-      mintRead = (await this.loader.load(mint, () => readMintAccount(this.rpc, mint, signal))).value;
-      verification = describeVerification(mintRead, checkedAtMs, token.decimals);
+      const cached = await this.loader.load(mint, () => readMintAccount(this.rpc, mint, signal));
+      mintRead = cached.value;
+      // Report when the RPC read actually happened, not when a cached value was
+      // requested again. Production gates must never make cached evidence look
+      // newer than it is.
+      verification = describeVerification(mintRead, cached.fetchedAtMs, token.decimals);
     } catch (err) {
       verification = {
         status: "unavailable",
         source: SOLANA_MAINNET_SOURCE,
-        checkedAtMs,
+        checkedAtMs: requestedAtMs,
         detail:
           err instanceof ArbError && err.code === "PROVIDER_RATE_LIMITED"
             ? "Solana RPC rate limit reached; on-chain settings could not be read."
@@ -373,6 +379,7 @@ export class ResearchService {
       verifiedByProvider: token.verifiedByProvider,
       identitySource: token.source,
       marketSource: token.source,
+      marketUpdatedAtMs: token.marketUpdatedAtMs ?? null,
       market: token.market,
       verification,
       authorities: {
@@ -388,7 +395,7 @@ export class ResearchService {
           ? "Executable quotes are available for this token."
           : "Paper trading needs an executable quote, and no live quote provider is wired up for arbitrary tokens yet.",
       },
-      fetchedAtMs: checkedAtMs,
+      fetchedAtMs: requestedAtMs,
     };
   }
 }

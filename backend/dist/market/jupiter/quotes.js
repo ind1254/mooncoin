@@ -71,6 +71,7 @@ export class JupiterQuoteProvider {
     baseUrl;
     timeoutMs;
     quoteTtlMs;
+    apiKey;
     clock;
     fetchImpl;
     loader;
@@ -78,6 +79,7 @@ export class JupiterQuoteProvider {
         this.baseUrl = options.baseUrl ?? DEFAULT_JUPITER_QUOTE_URL;
         this.timeoutMs = options.timeoutMs ?? 8_000;
         this.quoteTtlMs = options.quoteTtlMs ?? 20_000;
+        this.apiKey = options.apiKey;
         this.clock = options.clock ?? Date.now;
         this.fetchImpl = options.fetchImpl ?? globalThis.fetch;
         this.loader = new CachedLoader({
@@ -124,7 +126,7 @@ export class JupiterQuoteProvider {
         try {
             res = await this.fetchImpl(`${this.baseUrl}/quote?${params}`, {
                 signal: combined,
-                headers: { accept: "application/json" },
+                headers: { accept: "application/json", ...(this.apiKey ? { "x-api-key": this.apiKey } : {}) },
             });
         }
         catch (err) {

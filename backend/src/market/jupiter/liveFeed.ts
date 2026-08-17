@@ -72,20 +72,15 @@ function window(raw: JupiterRawToken["stats5m"]): LiveFeedWindow {
   };
 }
 
-const timestamp = (value: string | undefined): number | null => {
-  if (!value) return null;
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? parsed : null;
-};
-
 function normalize(raw: JupiterRawToken): LiveFeedToken {
+  const token = normalizeJupiterToken(raw);
   return {
-    token: normalizeJupiterToken(raw),
+    token,
     // Jupiter describes this as the token/pool creation timestamp. Moonpaper
     // labels it "first pool detected" because it is not an on-chain mint-age
     // proof and must not be presented as one.
-    firstPoolAtMs: timestamp(raw.createdAt),
-    updatedAtMs: timestamp((raw as JupiterRawToken & { updatedAt?: string }).updatedAt),
+    firstPoolAtMs: token.firstPoolAtMs ?? null,
+    updatedAtMs: token.marketUpdatedAtMs ?? null,
     launchpad: (raw as JupiterRawToken & { launchpad?: string }).launchpad ?? null,
     fiveMinutes: window(raw.stats5m),
     oneHour: window(raw.stats1h),
@@ -95,6 +90,7 @@ function normalize(raw: JupiterRawToken): LiveFeedToken {
 
 export interface JupiterLiveFeedOptions {
   baseUrl?: string;
+  apiKey?: string;
   timeoutMs?: number;
   cacheTtlMs?: number;
   clock?: () => number;
@@ -112,6 +108,7 @@ export class JupiterLiveFeedProvider implements LiveTokenFeedProvider {
   readonly source = JUPITER_SOURCE;
   private readonly baseUrl: string;
   private readonly timeoutMs: number;
+  private readonly apiKey: string | undefined;
   private readonly clock: () => number;
   private readonly fetchImpl: typeof fetch;
   private readonly loader: CachedLoader<LiveFeedToken[]>;
@@ -119,6 +116,7 @@ export class JupiterLiveFeedProvider implements LiveTokenFeedProvider {
   constructor(options: JupiterLiveFeedOptions = {}) {
     this.baseUrl = options.baseUrl ?? DEFAULT_JUPITER_TOKENS_URL;
     this.timeoutMs = options.timeoutMs ?? 8_000;
+    this.apiKey = options.apiKey;
     this.clock = options.clock ?? Date.now;
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch;
     this.loader = new CachedLoader<LiveFeedToken[]>({
@@ -150,7 +148,7 @@ export class JupiterLiveFeedProvider implements LiveTokenFeedProvider {
     try {
       response = await this.fetchImpl(`${this.baseUrl}${path}`, {
         signal: combined,
-        headers: { accept: "application/json" },
+        headers: { accept: "application/json", ...(this.apiKey ? { "x-api-key": this.apiKey } : {}) },
       });
     } catch (err) {
       if (timeout.aborted) throw new ArbError("PROVIDER_TIMEOUT", "Live token feed timed out", 504);

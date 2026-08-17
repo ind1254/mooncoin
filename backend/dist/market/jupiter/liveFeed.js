@@ -23,20 +23,15 @@ function window(raw) {
         traders: raw?.numTraders ?? null,
     };
 }
-const timestamp = (value) => {
-    if (!value)
-        return null;
-    const parsed = Date.parse(value);
-    return Number.isFinite(parsed) ? parsed : null;
-};
 function normalize(raw) {
+    const token = normalizeJupiterToken(raw);
     return {
-        token: normalizeJupiterToken(raw),
+        token,
         // Jupiter describes this as the token/pool creation timestamp. Moonpaper
         // labels it "first pool detected" because it is not an on-chain mint-age
         // proof and must not be presented as one.
-        firstPoolAtMs: timestamp(raw.createdAt),
-        updatedAtMs: timestamp(raw.updatedAt),
+        firstPoolAtMs: token.firstPoolAtMs ?? null,
+        updatedAtMs: token.marketUpdatedAtMs ?? null,
         launchpad: raw.launchpad ?? null,
         fiveMinutes: window(raw.stats5m),
         oneHour: window(raw.stats1h),
@@ -54,12 +49,14 @@ export class JupiterLiveFeedProvider {
     source = JUPITER_SOURCE;
     baseUrl;
     timeoutMs;
+    apiKey;
     clock;
     fetchImpl;
     loader;
     constructor(options = {}) {
         this.baseUrl = options.baseUrl ?? DEFAULT_JUPITER_TOKENS_URL;
         this.timeoutMs = options.timeoutMs ?? 8_000;
+        this.apiKey = options.apiKey;
         this.clock = options.clock ?? Date.now;
         this.fetchImpl = options.fetchImpl ?? globalThis.fetch;
         this.loader = new CachedLoader({
@@ -88,7 +85,7 @@ export class JupiterLiveFeedProvider {
         try {
             response = await this.fetchImpl(`${this.baseUrl}${path}`, {
                 signal: combined,
-                headers: { accept: "application/json" },
+                headers: { accept: "application/json", ...(this.apiKey ? { "x-api-key": this.apiKey } : {}) },
             });
         }
         catch (err) {

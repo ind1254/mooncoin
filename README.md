@@ -17,7 +17,7 @@ risks, and what would happen if I paper-traded it?"**
 
 | Pillar | What it does | Where |
 |---|---|---|
-| **Discover** | Live recently-created and five-minute trending Solana token feeds with price, volume, liquidity, freshness, risk gates, and a transparent research score | Research tab |
+| **Discover** | Live recently-created and five-minute trending Solana token feeds with price, volume, liquidity, freshness, duplicate-ticker warnings, and on-demand production eligibility gates | Research tab |
 | **Evaluate** | Separate momentum / liquidity / execution / risk scores, each with the exact evidence that produced it | Token detail |
 | **Compare execution** | Executable quotes per venue for your exact size: impact, pool fees, network + priority fees, min-received under slippage, best route vs alternatives | Token detail |
 | **Paper trade** | Simulated positions filled at the min-received of the best executable quote, with fees and impact applied; closes priced from live sell quotes — never chart prices | Confirm modal / Portfolio |
@@ -45,15 +45,18 @@ Everything runs locally. State (paper positions, settings) persists to
 
 ### Environment variables
 
-All optional — see [backend/.env.example](backend/.env.example):
-`PORT` (8787), `MARKET_MODE` (demo), `QUOTE_MODE` (mock), `PAPER_STARTING_SOL`
-(100), `DATA_DIR` (data), `ADMIN_TOKEN` (unset).
+See [backend/.env.example](backend/.env.example). The live providers work on the
+keyless compatibility host by default; production can set `JUPITER_API_KEY` and
+the official `api.jup.ag` URLs. Server-owned eligibility policy is configured by
+`TRADABILITY_MIN_LIQUIDITY_USD` (10,000),
+`TRADABILITY_MAX_PRICE_IMPACT_BPS` (300), and
+`TRADABILITY_MAX_MARKET_AGE_MS` (300,000). Client filters cannot weaken them.
 
 ### Tests & checks
 
 ```bash
 cd backend
-npm test           # 211 tests: live feeds/quotes, risk, money math, auth, paper engine, API flow
+npm test           # 217 tests: feeds/quotes/gates, risk, money math, auth, paper engine, API flow
 npm run typecheck  # strict TypeScript, no emit
 ```
 
@@ -63,8 +66,8 @@ npm run typecheck  # strict TypeScript, no emit
 web/                    Vanilla-JS SPA (no build step) — Discover, token detail,
                         trade confirmation, portfolio, settings, alerts drawer
 backend/src/
-  market/               Provider interfaces plus live Jupiter token/search/feed
-                        and quote adapters, Solana mint verification, and the
+  market/               Provider interfaces plus live Jupiter token/search/feed,
+                        quote and tradability adapters, Solana mint verification, and the
                         deterministic seeded simulator.
                         All values normalized with mint identity, source,
                         timestamp, age, and reliability.
@@ -91,14 +94,19 @@ display formatting — never in balances or P&L.
 **Provider boundary:** live discovery uses Jupiter Tokens V2 (`recent` and
 `toptraded/5m`) with a 10-second cache. Arbitrary-token research resolves by
 mint and verifies authority settings through read-only Solana RPC. Quotes use
-Jupiter's read-only quote route with no fabricated fallback. The simulator is
-still isolated and honestly labeled demonstration data.
+Jupiter's read-only quote route with no fabricated fallback. The production
+eligibility service combines those independent sources for one exact USDC size:
+fresh catalog timestamp, minimum liquidity, direct mint/freeze authority reads,
+duplicate-symbol warning, fresh route, and maximum impact. The simulator stays
+isolated and honestly labeled demonstration data.
 
 ## API sketch
 
 ```
 GET  /health                        GET  /v1/meta
 GET  /v1/feed                       ?kind=recent|trending&minLiquidityUsd&search
+GET  /v1/tradability/:mint          ?amountUsd&slippageBps (seven production gates)
+GET  /v1/quote                      ?inputMint&outputMint&amount&slippageBps
 GET  /v1/opportunities              ?tradeSizeSol&risk&minLiquidityUsd&search
 GET  /v1/tokens/:mint               ?tradeSizeSol      (detail + scores + evidence)
 GET  /v1/tokens/:mint/routes        ?tradeSizeSol&slippageBps
@@ -133,8 +141,12 @@ immediately.
 - The live home feed is request-driven and cached for 10 seconds; it is not a
   durable chain-indexing pipeline and does not backfill missed program events.
 - Jupiter catalog presence and reported liquidity do not prove that a route is
-  executable for a particular size. The UI requires the user to request a
-  fresh read-only quote before treating execution as available.
+  executable for a particular size. The UI exposes a server-side production
+  check that blocks stale/thin/authority-controlled/high-impact tokens and
+  independently verifies a fresh Jupiter route for the requested amount.
+- The keyless `lite-api.jup.ag` compatibility endpoints remain the zero-setup
+  default. A production operator should set a Jupiter Developer Platform key
+  and official endpoint URLs for monitored rate limits and long-term support.
 - Solana's public RPC can rate-limit on-chain authority verification. When it
   does, Moonpaper shows verification as unavailable rather than trusting a
   provider claim as chain truth.

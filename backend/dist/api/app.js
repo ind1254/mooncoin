@@ -13,6 +13,7 @@ import { JupiterTokenSearchProvider } from "../market/jupiter/tokenSearch.js";
 import { JupiterLiveFeedProvider, } from "../market/jupiter/liveFeed.js";
 import { JupiterQuoteProvider } from "../market/jupiter/quotes.js";
 import { ResearchService } from "../market/research.js";
+import { TradabilityService } from "../market/tradability.js";
 import { SolanaRpcClient } from "../market/solana/rpc.js";
 import { computeScores } from "../scoring/scores.js";
 import { PaperTradingEngine } from "../paper/engine.js";
@@ -37,7 +38,11 @@ export function usdToMicroUsd(usd) {
  * while the simulated market powers the Discover tab.
  */
 function buildResearchService(env, clock, market) {
-    return new ResearchService(new JupiterTokenSearchProvider({ baseUrl: env.JUPITER_TOKENS_URL, clock }), new SolanaRpcClient({ endpoint: env.SOLANA_RPC_URL, commitment: "confirmed" }), {
+    return new ResearchService(new JupiterTokenSearchProvider({
+        baseUrl: env.JUPITER_TOKENS_URL,
+        ...(env.JUPITER_API_KEY ? { apiKey: env.JUPITER_API_KEY } : {}),
+        clock,
+    }), new SolanaRpcClient({ endpoint: env.SOLANA_RPC_URL, commitment: "confirmed" }), {
         clock,
         mintCacheTtlMs: env.MINT_CACHE_TTL_MS,
         // Quotes only exist for tokens the simulator knows about, so paper
@@ -59,8 +64,18 @@ export function createDefaultDeps(overrides = {}) {
     const notify = overrides.notify ?? new NotificationEngine();
     const settings = overrides.settings ?? new FileSettingsStore(join(env.DATA_DIR, "settings.json"));
     const research = overrides.research ?? buildResearchService(env, clock, market);
-    const quotes = overrides.quotes ?? new JupiterQuoteProvider({ baseUrl: env.JUPITER_QUOTE_URL, clock });
-    const liveFeed = overrides.liveFeed ?? new JupiterLiveFeedProvider({ baseUrl: env.JUPITER_TOKENS_URL, clock });
+    const quotes = overrides.quotes ??
+        new JupiterQuoteProvider({
+            baseUrl: env.JUPITER_QUOTE_URL,
+            ...(env.JUPITER_API_KEY ? { apiKey: env.JUPITER_API_KEY } : {}),
+            clock,
+        });
+    const liveFeed = overrides.liveFeed ??
+        new JupiterLiveFeedProvider({
+            baseUrl: env.JUPITER_TOKENS_URL,
+            ...(env.JUPITER_API_KEY ? { apiKey: env.JUPITER_API_KEY } : {}),
+            clock,
+        });
     // Persistence is attached later by initPersistence(). Constructing it here
     // would require importing the Postgres driver at module scope, and a driver
     // that fails to resolve would take the entire application down with it.
@@ -260,19 +275,28 @@ function sumVolume(token, window) {
         return null;
     return (value.buyVolumeUsdMicro ?? 0n) + (value.sellVolumeUsdMicro ?? 0n);
 }
-function liveFeedAssessment(token, nowMs) {
+function liveFeedAssessment(token, nowMs, policy, duplicateSymbolCount) {
     const market = token.token.market;
     const liquidity = market.liquidityUsdMicro;
     const topHolders = market.topHolderPctBps;
     const ageMs = token.firstPoolAtMs === null ? null : Math.max(0, nowMs - token.firstPoolAtMs);
+    const marketAgeMs = token.updatedAtMs === null ? null : Math.max(0, nowMs - token.updatedAtMs);
     const authority = token.token.providerClaims;
     let risk = 0;
     const warnings = [];
-    if (liquidity === null || liquidity < 10000n * 1000000n) {
+    if (marketAgeMs === null || marketAgeMs > policy.maxMarketAgeMs) {
+        risk += 30;
+        warnings.push(marketAgeMs === null ? "Market update time unavailable" : "Market data is too old for eligibility");
+    }
+    if (duplicateSymbolCount > 1) {
+        risk += 5;
+        warnings.push(`Ticker shared by ${duplicateSymbolCount} mints — verify address`);
+    }
+    if (liquidity === null || liquidity < policy.minLiquidityUsdMicro) {
         risk += 30;
         warnings.push(liquidity === null ? "Liquidity not reported" : "Very thin liquidity");
     }
-    else if (liquidity < 50000n * 1000000n) {
+    else if (liquidity < policy.minLiquidityUsdMicro * 5n) {
         risk += 14;
         warnings.push("Thin liquidity");
     }
@@ -311,11 +335,13 @@ function liveFeedAssessment(token, nowMs) {
     quality += authority.mintAuthorityDisabled === true ? 8 : 0;
     quality += authority.freezeAuthorityDisabled === true ? 7 : 0;
     quality = Math.max(0, Math.min(100, quality - Math.floor(risk / 4)));
-    const status = market.priceUsdPico === null || liquidity === null
-        ? "detected"
-        : liquidity < 10000n * 1000000n
-            ? "thin"
-            : "active";
+    const status = marketAgeMs === null || marketAgeMs > policy.maxMarketAgeMs
+        ? "stale"
+        : market.priceUsdPico === null || liquidity === null
+            ? "detected"
+            : liquidity < policy.minLiquidityUsdMicro
+                ? "thin"
+                : "active";
     const riskLevel = risk >= 45 ? "high" : risk >= 20 ? "medium" : "low";
     return {
         status,
@@ -323,14 +349,17 @@ function liveFeedAssessment(token, nowMs) {
         riskScore: Math.min(100, risk),
         riskLevel,
         warnings: warnings.slice(0, 4),
+        duplicateSymbolCount,
         eligibility: status === "active"
-            ? "Market data is active. Request a live quote to confirm an executable route for your size."
-            : status === "thin"
-                ? "Liquidity is below Moonpaper's $10k research threshold."
-                : "Detected by Jupiter, but complete pricing and liquidity are not available yet.",
+            ? "Catalog gates passed. Run the production check to verify the route and on-chain authorities."
+            : status === "stale"
+                ? "Market data is stale or undated, so production eligibility is blocked."
+                : status === "thin"
+                    ? `Liquidity is below Moonpaper's $${(policy.minLiquidityUsdMicro / 1000000n).toString()} production threshold.`
+                    : "Detected by Jupiter, but complete pricing and liquidity are not available yet.",
     };
 }
-function serializeLiveFeedToken(token, nowMs, inWatchlist) {
+function serializeLiveFeedToken(token, nowMs, inWatchlist, policy, duplicateSymbolCount) {
     const market = token.token.market;
     const updatedAgeSeconds = token.updatedAtMs === null ? null : Math.max(0, Math.round((nowMs - token.updatedAtMs) / 1000));
     const volume = (window) => usdOrNull(sumVolume(token, window));
@@ -372,7 +401,7 @@ function serializeLiveFeedToken(token, nowMs, inWatchlist) {
         stats1h: serializeWindow(token.oneHour),
         stats24h: serializeWindow(token.twentyFourHours),
         providerClaims: token.token.providerClaims,
-        assessment: liveFeedAssessment(token, nowMs),
+        assessment: liveFeedAssessment(token, nowMs, policy, duplicateSymbolCount),
         inWatchlist,
     };
 }
@@ -405,6 +434,7 @@ function serializeProfile(p) {
         verifiedByProvider: p.verifiedByProvider,
         identitySource: p.identitySource,
         marketSource: p.marketSource,
+        marketUpdatedAtMs: p.marketUpdatedAtMs,
         fetchedAtMs: p.fetchedAtMs,
         market: {
             priceUsd: p.market.priceUsdPico === null ? null : picoUsdToPriceString(p.market.priceUsdPico),
@@ -427,6 +457,44 @@ function serializeProfile(p) {
         authorities: p.authorities,
         risk: p.risk,
         simulation: p.simulation,
+    };
+}
+function serializeTradability(check, nowMs) {
+    const q = check.quote;
+    return {
+        live: true,
+        simulationOnly: true,
+        executionEnabled: false,
+        checkedAtMs: check.checkedAtMs,
+        token: { mint: check.mint, symbol: check.symbol, name: check.name, decimals: check.profile.decimals },
+        request: { amountUsd: check.amountUsd, slippagePct: pctStr(check.slippageBps) },
+        eligible: check.eligible,
+        tradable: check.tradable,
+        verdict: check.verdict,
+        summary: check.summary,
+        blockingGateIds: check.blockingGateIds,
+        duplicateMints: check.duplicateMints,
+        policy: {
+            minLiquidityUsd: microToUsdString(check.policy.minLiquidityUsdMicro),
+            maxPriceImpactPct: pctStr(check.policy.maxPriceImpactBps),
+            maxMarketAgeSeconds: Math.round(check.policy.maxMarketAgeMs / 1_000),
+        },
+        gates: check.gates,
+        quote: q === null
+            ? null
+            : {
+                input: `${baseUnitsToDecimalString(q.inAmount, check.inputToken.decimals)} ${check.inputToken.symbol}`,
+                output: `${baseUnitsToDecimalString(q.outAmount, check.profile.decimals)} ${check.symbol}`,
+                minimumOutput: `${baseUnitsToDecimalString(q.minOutAmount, check.profile.decimals)} ${check.symbol}`,
+                priceImpactPct: pctStr(q.priceImpactBps),
+                route: q.routePlan.map((hop) => ({ venue: hop.ammLabel, percent: hop.percent })),
+                retrievedAtMs: q.retrievedAtMs,
+                expiresAtMs: q.expiresAtMs,
+                ageSeconds: Math.max(0, Math.round((nowMs - q.retrievedAtMs) / 1_000)),
+                expired: nowMs >= q.expiresAtMs,
+                source: q.source,
+            },
+        notice: "Eligibility is a point-in-time research result for this exact quote size. It does not execute a trade or predict performance.",
     };
 }
 function serializeScores(scores) {
@@ -546,6 +614,12 @@ export async function runNotificationTick(deps) {
 }
 export function createApp(deps) {
     const app = express();
+    const tradabilityPolicy = {
+        minLiquidityUsdMicro: BigInt(deps.env.TRADABILITY_MIN_LIQUIDITY_USD) * 1000000n,
+        maxPriceImpactBps: BigInt(deps.env.TRADABILITY_MAX_PRICE_IMPACT_BPS),
+        maxMarketAgeMs: deps.env.TRADABILITY_MAX_MARKET_AGE_MS,
+    };
+    const tradability = new TradabilityService(deps.research, deps.quotes, tradabilityPolicy, deps.clock);
     app.disable("x-powered-by");
     app.use(express.json({ limit: "32kb" }));
     // Correlation IDs + structured request logging; never logs request bodies
@@ -674,6 +748,13 @@ export function createApp(deps) {
             const settings = deps.settings.get();
             const nowMs = deps.clock();
             let tokens = feed.tokens;
+            const symbolMints = new Map();
+            for (const item of feed.tokens) {
+                const key = item.token.symbol.toLowerCase();
+                const mints = symbolMints.get(key) ?? new Set();
+                mints.add(item.token.mint);
+                symbolMints.set(key, mints);
+            }
             if (q.data.minLiquidityUsd !== undefined) {
                 const threshold = BigInt(Math.round(q.data.minLiquidityUsd)) * 1000000n;
                 tokens = tokens.filter((item) => (item.token.market.liquidityUsdMicro ?? 0n) >= threshold);
@@ -696,8 +777,13 @@ export function createApp(deps) {
                 reliability: feed.reliability,
                 refreshAfterMs: 10_000,
                 count: tokens.length,
-                notice: "Live catalog data is not an execution guarantee. Request a quote to verify a route and inspect the mint on-chain before any paper decision.",
-                tokens: tokens.map((item) => serializeLiveFeedToken(item, nowMs, settings.watchlist.includes(item.token.mint))),
+                policy: {
+                    minLiquidityUsd: deps.env.TRADABILITY_MIN_LIQUIDITY_USD.toString(),
+                    maxPriceImpactPct: pctStr(tradabilityPolicy.maxPriceImpactBps),
+                    maxMarketAgeSeconds: Math.round(tradabilityPolicy.maxMarketAgeMs / 1_000),
+                },
+                notice: "Live catalog data is not an execution guarantee. Run the production check to verify a route, market freshness, liquidity, ticker ambiguity, and the mint account.",
+                tokens: tokens.map((item) => serializeLiveFeedToken(item, nowMs, settings.watchlist.includes(item.token.mint), tradabilityPolicy, symbolMints.get(item.token.symbol.toLowerCase())?.size ?? 1)),
             });
         }
         catch (err) {
@@ -775,6 +861,33 @@ export function createApp(deps) {
                     freshnessPolicy: "Quote expiry is set by Moonpaper; Jupiter does not return one.",
                 },
             });
+        }
+        catch (err) {
+            fail(res, err);
+        }
+    });
+    /**
+     * Point-in-time production eligibility check for one mint and one USDC size.
+     * Every required gate is evaluated server-side so a client cannot weaken the
+     * liquidity, freshness, authority, or price-impact policy.
+     */
+    app.get("/v1/tradability/:mint", async (req, res) => {
+        try {
+            const q = z
+                .object({
+                amountUsd: z.string().min(1).max(32).default("100"),
+                slippageBps: z.coerce.number().int().min(1).max(5_000).default(50),
+            })
+                .safeParse(req.query);
+            if (!q.success) {
+                throw new ArbError("VALIDATION_ERROR", "Invalid tradability-check parameters", 400, {
+                    issues: q.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`),
+                });
+            }
+            const abort = new AbortController();
+            req.on("close", () => abort.abort());
+            const check = await tradability.check(req.params.mint, q.data.amountUsd, BigInt(q.data.slippageBps), abort.signal);
+            res.json(serializeTradability(check, deps.clock()));
         }
         catch (err) {
             fail(res, err);

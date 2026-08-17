@@ -19,8 +19,11 @@ strict safety boundary of **no real trades, no custody, no private keys**.
 ## What it does (five product pillars)
 
 1. **Discover** — live recently-created and five-minute trending Solana token
-   feeds from Jupiter with price, volume, liquidity, freshness, risk gates,
-   a 0–100 research score, minimum-liquidity filters, and canonical mint IDs.
+   feeds from Jupiter with price, volume, liquidity, freshness, duplicate-ticker
+   warnings, a 0–100 research score, and canonical mint IDs. An on-demand
+   seven-gate production check verifies market age, liquidity, on-chain mint and
+   freeze authorities, ticker ambiguity, a live route, and price impact for an
+   exact USDC size.
 2. **Evaluate** — separate momentum / liquidity / execution / token-risk scores,
    each expandable to the exact evidence that produced it (e.g. "volume up 82%
    vs previous hour", "top 10 wallets hold 62% of supply", "mint authority
@@ -75,7 +78,8 @@ fired ("BONK now matches your balanced strategy: liquidity increased, ...").
   the overall score (a pumping rug-pull candidate can never rank "strong").
 - **Token identity by mint address only** — symbols are display-only, which
   kills the classic duplicate-ticker attack on token lists.
-- **Testing:** 211 automated tests: live-feed normalization, provider degradation,
+- **Testing:** 217 automated tests: live-feed normalization, production
+  tradability gates, provider degradation,
   money-math boundaries, scoring evidence,
   paper-engine invariants (balance bookkeeping is exact to the lamport), and
   API integration tests running the full user flow against an in-memory app
@@ -110,7 +114,7 @@ fired ("BONK now matches your balanced strategy: liquidity increased, ...").
 
 ## Numbers you can cite
 
-- 211 automated tests across 15 suites, all passing; strict-mode TypeScript
+- 217 automated tests across 16 suites, all passing; strict-mode TypeScript
 - ~15 REST endpoints (market, paper trading, notifications, settings + legacy)
 - 6 seeded market scenarios; 3 simulated venues with distinct fee/liquidity profiles
 - 5 git commits from baseline to deploy-ready on GitHub

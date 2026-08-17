@@ -189,6 +189,10 @@ export interface TokenSearchResult {
   symbol: string;
   name: string;
   decimals: number;
+  /** First pool creation time reported by the catalog; not mint creation. */
+  firstPoolAtMs?: number | null;
+  /** When the provider last refreshed this token's market record. */
+  marketUpdatedAtMs?: number | null;
   tokenProgram: string | null;
   iconUrl: string | null;
   /** The provider's own verified/allowlist flag — a hint, not proof. */

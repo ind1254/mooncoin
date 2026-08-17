@@ -372,6 +372,43 @@ input[type="password"]:focus { border-color: var(--accent); }
   font-size: 11px; color: var(--muted); line-height: 1.55;
 }
 
+/* ---------- production eligibility gates ---------- */
+.gate-check-out { margin-top: 10px; }
+.gate-report {
+  margin-top: 12px; padding: 13px;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 12px;
+}
+.gate-report.eligible { border-color: rgba(46,204,113,.42); }
+.gate-report.blocked { border-color: rgba(255,93,93,.42); }
+.gate-report.needs_verification { border-color: rgba(245,166,35,.42); }
+.gate-report.expired { border-color: rgba(245,166,35,.42); }
+.gate-report-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.gate-verdict { font: 800 11px/1 var(--mono); letter-spacing: .08em; color: var(--orange); }
+.gate-report.eligible .gate-verdict { color: var(--green); }
+.gate-report.blocked .gate-verdict { color: var(--red); }
+.gate-report.expired .gate-verdict { color: var(--orange); }
+.gate-summary { margin: 7px 0 8px; color: var(--muted); font-size: 11px; line-height: 1.45; }
+.gate-row {
+  display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; gap: 8px;
+  align-items: center; padding: 7px 0; border-top: 1px dashed var(--line);
+}
+.gate-icon {
+  width: 18px; height: 18px; border-radius: 50%; display: inline-flex;
+  align-items: center; justify-content: center; font-size: 10px; font-weight: 900;
+  background: var(--panel-2); color: var(--muted);
+}
+.gate-row.pass .gate-icon { background: var(--green-soft); color: var(--green); }
+.gate-row.fail .gate-icon { background: var(--red-soft); color: var(--red); }
+.gate-row.warning .gate-icon, .gate-row.unavailable .gate-icon { background: var(--orange-soft); color: var(--orange); }
+.gate-copy { display: flex; flex-direction: column; min-width: 0; }
+.gate-copy b { font-size: 11px; }
+.gate-copy small { margin-top: 2px; color: var(--faint); line-height: 1.35; }
+.gate-route { margin-top: 8px; padding: 8px 9px; border-radius: 8px; background: var(--panel-2); font-size: 10px; overflow-wrap: anywhere; }
+.gate-policy { margin-top: 8px; line-height: 1.45; }
+.gate-report.compact .gate-row { padding: 5px 0; }
+.gate-report.compact .gate-copy small { display: none; }
+.gate-report.compact .gate-policy { display: none; }
+
 /* ---------- provenance & verification ---------- */
 .chip.live-chip { color: var(--green); background: var(--green-soft); border-color: rgba(46,204,113,.35); }
 .chip.unver-chip { color: var(--muted); }
@@ -518,4 +555,6 @@ footer.disclaimer {
   .opp-card { grid-template-columns: 1fr; }
   .opp-emoji { display: none; }
   .opp-side { flex-direction: row; align-items: center; justify-content: space-between; }
+  .gate-row { grid-template-columns: 20px minmax(0, 1fr); }
+  .gate-row .src { grid-column: 2; width: max-content; }
 }

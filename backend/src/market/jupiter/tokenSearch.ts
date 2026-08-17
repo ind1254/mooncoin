@@ -76,6 +76,7 @@ export const jupiterTokenSchema = z
     isVerified: z.boolean().optional(),
     tags: z.array(z.string()).optional(),
     createdAt: z.string().optional(),
+    updatedAt: z.string().optional(),
     audit: z
       .object({
         mintAuthorityDisabled: z.boolean().optional(),
@@ -96,6 +97,12 @@ const searchResponseSchema = z.array(jupiterTokenSchema);
 
 export type JupiterRawToken = z.infer<typeof jupiterTokenSchema>;
 
+const timestamp = (value: string | undefined): number | null => {
+  if (!value) return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
 export function normalizeJupiterToken(raw: JupiterRawToken): TokenSearchResult {
   const a = raw.audit;
   const s24 = raw.stats24h;
@@ -106,6 +113,8 @@ export function normalizeJupiterToken(raw: JupiterRawToken): TokenSearchResult {
     symbol: raw.symbol,
     name: raw.name,
     decimals: raw.decimals,
+    firstPoolAtMs: timestamp(raw.createdAt),
+    marketUpdatedAtMs: timestamp(raw.updatedAt),
     tokenProgram: raw.tokenProgram ?? null,
     iconUrl: raw.icon ?? null,
     verifiedByProvider: raw.isVerified === true,
@@ -137,6 +146,7 @@ export function normalizeJupiterToken(raw: JupiterRawToken): TokenSearchResult {
 
 export interface JupiterTokenSearchOptions {
   baseUrl?: string;
+  apiKey?: string;
   timeoutMs?: number;
   /** Jupiter advertises max-age=10, so a short TTL matches upstream semantics. */
   cacheTtlMs?: number;
@@ -148,12 +158,14 @@ export class JupiterTokenSearchProvider implements TokenSearchProvider {
   readonly source = JUPITER_SOURCE;
   private readonly baseUrl: string;
   private readonly timeoutMs: number;
+  private readonly apiKey: string | undefined;
   private readonly fetchImpl: typeof fetch;
   private readonly loader: CachedLoader<TokenSearchResult[]>;
 
   constructor(options: JupiterTokenSearchOptions = {}) {
     this.baseUrl = options.baseUrl ?? DEFAULT_JUPITER_TOKENS_URL;
     this.timeoutMs = options.timeoutMs ?? 8_000;
+    this.apiKey = options.apiKey;
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch;
     this.loader = new CachedLoader<TokenSearchResult[]>({
       ttlMs: options.cacheTtlMs ?? 15_000,
@@ -194,7 +206,10 @@ export class JupiterTokenSearchProvider implements TokenSearchProvider {
 
     let res: Response;
     try {
-      res = await this.fetchImpl(url, { signal: combined, headers: { accept: "application/json" } });
+      res = await this.fetchImpl(url, {
+        signal: combined,
+        headers: { accept: "application/json", ...(this.apiKey ? { "x-api-key": this.apiKey } : {}) },
+      });
     } catch (err) {
       if (timeout.aborted) throw new ArbError("PROVIDER_TIMEOUT", "Token search timed out", 504);
       if (signal?.aborted) throw err;

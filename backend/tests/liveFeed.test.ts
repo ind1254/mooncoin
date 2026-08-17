@@ -42,16 +42,20 @@ afterEach(() => servers.splice(0).forEach((server) => server.close()));
 describe("Jupiter live token feed", () => {
   it("normalizes recent tokens, activity windows, and timestamps", async () => {
     let requested = "";
+    let apiKey = "";
     const provider = new JupiterLiveFeedProvider({
       clock: () => NOW,
-      fetchImpl: async (input) => {
+      apiKey: "test-jupiter-key",
+      fetchImpl: async (input, init) => {
         requested = String(input);
+        apiKey = new Headers(init?.headers).get("x-api-key") ?? "";
         return Response.json([token]);
       },
     });
 
     const result = await provider.getFeed("recent");
     expect(requested).toContain("/recent");
+    expect(apiKey).toBe("test-jupiter-key");
     expect(result.source).toBe("jupiter:tokens-v2");
     expect(result.tokens[0]?.token.mint).toBe(MINT);
     expect(result.tokens[0]?.firstPoolAtMs).toBe(Date.parse(token.createdAt));
@@ -106,6 +110,6 @@ describe("Jupiter live token feed", () => {
     expect(body.tokens[0]?.liquidityUsd).toBe("325000.00");
     expect(body.tokens[0]?.fiveMinuteVolumeUsd).toBe("70000.00");
     expect(body.tokens[0]?.assessment.status).toBe("active");
-    expect(body.tokens[0]?.assessment.eligibility).toMatch(/Request a live quote/);
+    expect(body.tokens[0]?.assessment.eligibility).toMatch(/production check/);
   });
 });

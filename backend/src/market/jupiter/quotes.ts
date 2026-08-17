@@ -124,6 +124,7 @@ const quoteSchema = z
 
 export interface JupiterQuoteOptions {
   baseUrl?: string;
+  apiKey?: string;
   timeoutMs?: number;
   /** How long a quote may be reused. Kept very short: quotes move constantly. */
   cacheTtlMs?: number;
@@ -138,6 +139,7 @@ export class JupiterQuoteProvider implements QuoteProvider {
   private readonly baseUrl: string;
   private readonly timeoutMs: number;
   private readonly quoteTtlMs: number;
+  private readonly apiKey: string | undefined;
   private readonly clock: () => number;
   private readonly fetchImpl: typeof fetch;
   private readonly loader: CachedLoader<NormalizedSwapQuote>;
@@ -146,6 +148,7 @@ export class JupiterQuoteProvider implements QuoteProvider {
     this.baseUrl = options.baseUrl ?? DEFAULT_JUPITER_QUOTE_URL;
     this.timeoutMs = options.timeoutMs ?? 8_000;
     this.quoteTtlMs = options.quoteTtlMs ?? 20_000;
+    this.apiKey = options.apiKey;
     this.clock = options.clock ?? Date.now;
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch;
     this.loader = new CachedLoader<NormalizedSwapQuote>({
@@ -197,7 +200,7 @@ export class JupiterQuoteProvider implements QuoteProvider {
     try {
       res = await this.fetchImpl(`${this.baseUrl}/quote?${params}`, {
         signal: combined,
-        headers: { accept: "application/json" },
+        headers: { accept: "application/json", ...(this.apiKey ? { "x-api-key": this.apiKey } : {}) },
       });
     } catch (err) {
       if (timeout.aborted) throw new ArbError("PROVIDER_TIMEOUT", "Quote provider timed out", 504);

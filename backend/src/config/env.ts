@@ -21,6 +21,14 @@ const envSchema = z.object({
   JUPITER_TOKENS_URL: z.string().url().default("https://lite-api.jup.ag/tokens/v2"),
   /** Read-only swap quotes. Only /quote is ever called, never /swap. */
   JUPITER_QUOTE_URL: z.string().url().default("https://lite-api.jup.ag/swap/v1"),
+  /** Optional production Developer Platform credential. Never exposed to the client. */
+  JUPITER_API_KEY: z.string().min(1).optional(),
+  /** Server-side production gate: minimum reported market liquidity. */
+  TRADABILITY_MIN_LIQUIDITY_USD: z.coerce.number().int().min(0).max(1_000_000_000).default(10_000),
+  /** Maximum permitted impact for the requested one-way quote. */
+  TRADABILITY_MAX_PRICE_IMPACT_BPS: z.coerce.number().int().min(1).max(5_000).default(300),
+  /** Reject token market records older than this provider timestamp. */
+  TRADABILITY_MAX_MARKET_AGE_MS: z.coerce.number().int().min(5_000).max(3_600_000).default(300_000),
   /** Legacy arbitrage endpoints: mock (offline) or jupiter (live quotes). */
   QUOTE_MODE: z.enum(["mock", "jupiter"]).default("mock"),
   /** Virtual starting balance for the paper portfolio, in SOL. */
