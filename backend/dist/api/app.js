@@ -17,6 +17,7 @@ import { TradabilityService } from "../market/tradability.js";
 import { SolanaRpcClient } from "../market/solana/rpc.js";
 import { computeScores } from "../scoring/scores.js";
 import { PaperTradingEngine } from "../paper/engine.js";
+import { LivePaperTradingService } from "../paper/livePaper.js";
 import { FilePaperStateStore, InMemoryPaperStateStore } from "../paper/store.js";
 import { NotificationEngine } from "../notify/engine.js";
 import { FileSettingsStore, settingsSchema } from "../settings/settings.js";
@@ -1196,6 +1197,13 @@ export function createApp(deps) {
     app.use(createAuthRouter({
         getAuth: () => deps.auth,
         getDb: () => deps.db,
+        createPaperTrading: (db) => new LivePaperTradingService(db, tradability, deps.quotes, {
+            startingMicroUsd: usdToMicroUsd(deps.env.PAPER_STARTING_USD),
+            minTradeMicroUsd: usdToMicroUsd(deps.env.PAPER_MIN_TRADE_USD),
+            maxTradeMicroUsd: usdToMicroUsd(deps.env.PAPER_MAX_TRADE_USD),
+            maxOpenPositions: deps.env.PAPER_MAX_OPEN_POSITIONS,
+            maxEntryPriceImpactBps: BigInt(deps.env.TRADABILITY_MAX_PRICE_IMPACT_BPS),
+        }, deps.clock),
         startingMicroUsd: usdToMicroUsd(deps.env.PAPER_STARTING_USD),
         secureCookies: deps.env.COOKIE_SECURE,
     }));

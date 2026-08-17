@@ -43,6 +43,12 @@ const envSchema = z.object({
     DATABASE_URL: z.string().min(1).optional(),
     /** Starting paper capital for a new account, in whole USD. */
     PAPER_STARTING_USD: z.coerce.number().positive().max(100_000_000).default(100_000),
+    /** Smallest live-quote paper entry accepted by the server. */
+    PAPER_MIN_TRADE_USD: z.coerce.number().int().min(1).max(1_000_000).default(10),
+    /** Largest single live-quote paper entry accepted by the server. */
+    PAPER_MAX_TRADE_USD: z.coerce.number().int().min(1).max(100_000_000).default(10_000),
+    /** Bound quote fan-out and accidental position spam per account. */
+    PAPER_MAX_OPEN_POSITIONS: z.coerce.number().int().min(1).max(100).default(25),
     /** How long a signed-in session lasts. */
     SESSION_TTL_DAYS: z.coerce.number().int().min(1).max(365).default(30),
     /**

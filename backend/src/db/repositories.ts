@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { ArbError } from "../core/errors.js";
 import { readBigInt, readDateMs, readString, type SqlClient, type SqlRow } from "./client.js";
 
 /**
@@ -35,6 +36,129 @@ export interface WatchlistRecord {
   id: string;
   tokenMint: string;
   createdAtMs: number;
+}
+
+export type LivePaperPositionStatus = "open" | "closed";
+
+export interface LivePaperPositionRecord {
+  id: string;
+  portfolioId: string;
+  tokenMint: string;
+  tokenSymbol: string;
+  tokenName: string;
+  tokenDecimals: number;
+  status: LivePaperPositionStatus;
+  tokenQuantityBaseUnits: bigint;
+  entryCostMicroUsd: bigint;
+  entrySlippageBps: bigint;
+  entryPriceImpactBps: bigint;
+  entryRoute: string[];
+  entryQuoteSource: string;
+  entryQuoteRetrievedAtMs: number;
+  entryQuoteExpiresAtMs: number;
+  openedAtMs: number;
+  closeProceedsMicroUsd: bigint | null;
+  realizedPnlMicroUsd: bigint | null;
+  exitSlippageBps: bigint | null;
+  exitPriceImpactBps: bigint | null;
+  exitRoute: string[] | null;
+  exitQuoteSource: string | null;
+  exitQuoteRetrievedAtMs: number | null;
+  exitQuoteExpiresAtMs: number | null;
+  closedAtMs: number | null;
+}
+
+export interface OpenLivePaperPositionInput {
+  tokenMint: string;
+  tokenSymbol: string;
+  tokenName: string;
+  tokenDecimals: number;
+  tokenQuantityBaseUnits: bigint;
+  entryCostMicroUsd: bigint;
+  entrySlippageBps: bigint;
+  entryPriceImpactBps: bigint;
+  entryRoute: string[];
+  entryQuoteSource: string;
+  entryQuoteRetrievedAtMs: number;
+  entryQuoteExpiresAtMs: number;
+  openedAtMs: number;
+}
+
+export interface CloseLivePaperPositionInput {
+  closeProceedsMicroUsd: bigint;
+  exitSlippageBps: bigint;
+  exitPriceImpactBps: bigint;
+  exitRoute: string[];
+  exitQuoteSource: string;
+  exitQuoteRetrievedAtMs: number;
+  exitQuoteExpiresAtMs: number;
+  closedAtMs: number;
+}
+
+function readInteger(value: unknown): number {
+  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
+  if (!Number.isSafeInteger(parsed)) throw new Error("Expected an integer database value");
+  return parsed;
+}
+
+function readNullableDateMs(value: unknown): number | null {
+  return value === null || value === undefined ? null : readDateMs(value);
+}
+
+function readNullableString(value: unknown): string | null {
+  return value === null || value === undefined ? null : readString(value);
+}
+
+function readRoute(value: unknown): string[] {
+  const parsed = typeof value === "string" ? (JSON.parse(value) as unknown) : value;
+  if (!Array.isArray(parsed) || !parsed.every((item) => typeof item === "string")) {
+    throw new Error("Expected a JSON route-label array");
+  }
+  return parsed;
+}
+
+function toLivePaperPosition(row: SqlRow): LivePaperPositionRecord {
+  const status = readString(row.status);
+  if (status !== "open" && status !== "closed") throw new Error("Unexpected paper-position status");
+  return {
+    id: readString(row.id),
+    portfolioId: readString(row.portfolio_id),
+    tokenMint: readString(row.token_mint),
+    tokenSymbol: readString(row.token_symbol),
+    tokenName: readString(row.token_name),
+    tokenDecimals: readInteger(row.token_decimals),
+    status,
+    tokenQuantityBaseUnits: readBigInt(row.token_quantity_base_units),
+    entryCostMicroUsd: readBigInt(row.entry_cost_micro_usd),
+    entrySlippageBps: readBigInt(row.entry_slippage_bps),
+    entryPriceImpactBps: readBigInt(row.entry_price_impact_bps),
+    entryRoute: readRoute(row.entry_route),
+    entryQuoteSource: readString(row.entry_quote_source),
+    entryQuoteRetrievedAtMs: readDateMs(row.entry_quote_retrieved_at),
+    entryQuoteExpiresAtMs: readDateMs(row.entry_quote_expires_at),
+    openedAtMs: readDateMs(row.opened_at),
+    closeProceedsMicroUsd:
+      row.close_proceeds_micro_usd === null || row.close_proceeds_micro_usd === undefined
+        ? null
+        : readBigInt(row.close_proceeds_micro_usd),
+    realizedPnlMicroUsd:
+      row.realized_pnl_micro_usd === null || row.realized_pnl_micro_usd === undefined
+        ? null
+        : readBigInt(row.realized_pnl_micro_usd),
+    exitSlippageBps:
+      row.exit_slippage_bps === null || row.exit_slippage_bps === undefined
+        ? null
+        : readBigInt(row.exit_slippage_bps),
+    exitPriceImpactBps:
+      row.exit_price_impact_bps === null || row.exit_price_impact_bps === undefined
+        ? null
+        : readBigInt(row.exit_price_impact_bps),
+    exitRoute: row.exit_route === null || row.exit_route === undefined ? null : readRoute(row.exit_route),
+    exitQuoteSource: readNullableString(row.exit_quote_source),
+    exitQuoteRetrievedAtMs: readNullableDateMs(row.exit_quote_retrieved_at),
+    exitQuoteExpiresAtMs: readNullableDateMs(row.exit_quote_expires_at),
+    closedAtMs: readNullableDateMs(row.closed_at),
+  };
 }
 
 function toUser(row: SqlRow): UserRecord {
@@ -174,6 +298,174 @@ export class PortfolioRepository {
       [portfolioId, userId],
     );
     return rows[0] ? toPortfolio(rows[0]) : null;
+  }
+}
+
+/**
+ * Atomic persistence for live-quote paper positions.
+ *
+ * The portfolio row is locked before cash or position state changes. That
+ * makes concurrent opens respect the cash/position limits and guarantees two
+ * close requests can never credit the same simulated proceeds twice.
+ */
+export class LivePaperPositionRepository {
+  constructor(private readonly db: SqlClient) {}
+
+  async findOwned(userId: string, positionId: string): Promise<LivePaperPositionRecord | null> {
+    const rows = await this.db.query(
+      `select pp.*
+         from paper_positions pp
+         join portfolios p on p.id = pp.portfolio_id
+        where pp.id = $1 and p.user_id = $2`,
+      [positionId, userId],
+    );
+    return rows[0] ? toLivePaperPosition(rows[0]) : null;
+  }
+
+  async listForUser(userId: string): Promise<LivePaperPositionRecord[]> {
+    const rows = await this.db.query(
+      `select pp.*
+         from paper_positions pp
+         join portfolios p on p.id = pp.portfolio_id
+        where p.user_id = $1
+        order by pp.opened_at desc`,
+      [userId],
+    );
+    return rows.map(toLivePaperPosition);
+  }
+
+  async open(
+    userId: string,
+    startingMicroUsd: bigint,
+    maxOpenPositions: number,
+    input: OpenLivePaperPositionInput,
+  ): Promise<LivePaperPositionRecord> {
+    return this.db.transaction(async (tx) => {
+      const portfolio = await new PortfolioRepository(tx).ensureDefault(userId, startingMicroUsd);
+      await tx.query("select id from portfolios where id = $1 and user_id = $2 for update", [portfolio.id, userId]);
+
+      const counts = await tx.query<{ count: string }>(
+        "select count(*)::text as count from paper_positions where portfolio_id = $1 and status = 'open'",
+        [portfolio.id],
+      );
+      if (Number(counts[0]?.count ?? "0") >= maxOpenPositions) {
+        throw new ArbError(
+          "POSITION_LIMIT_REACHED",
+          `Close an existing paper position before opening more than ${maxOpenPositions}.`,
+          409,
+        );
+      }
+
+      const debited = await tx.query(
+        `update portfolios
+            set cash_micro_usd = cash_micro_usd - $2,
+                updated_at = to_timestamp($3::double precision / 1000)
+          where id = $1 and user_id = $4 and cash_micro_usd >= $2
+          returning id`,
+        [portfolio.id, input.entryCostMicroUsd.toString(), input.openedAtMs, userId],
+      );
+      if (debited.length === 0) {
+        throw new ArbError(
+          "INSUFFICIENT_PAPER_BALANCE",
+          "This paper account does not have enough simulated cash for that entry.",
+          409,
+        );
+      }
+
+      const rows = await tx.query(
+        `insert into paper_positions (
+           portfolio_id, token_mint, token_symbol, token_name, token_decimals, status,
+           token_quantity_base_units, entry_cost_micro_usd, entry_slippage_bps,
+           entry_price_impact_bps, entry_route, entry_quote_source,
+           entry_quote_retrieved_at, entry_quote_expires_at, opened_at
+         ) values (
+           $1, $2, $3, $4, $5, 'open', $6, $7, $8, $9, $10::jsonb, $11,
+           to_timestamp($12::double precision / 1000),
+           to_timestamp($13::double precision / 1000),
+           to_timestamp($14::double precision / 1000)
+         ) returning *`,
+        [
+          portfolio.id,
+          input.tokenMint,
+          input.tokenSymbol,
+          input.tokenName,
+          input.tokenDecimals,
+          input.tokenQuantityBaseUnits.toString(),
+          input.entryCostMicroUsd.toString(),
+          input.entrySlippageBps.toString(),
+          input.entryPriceImpactBps.toString(),
+          JSON.stringify(input.entryRoute),
+          input.entryQuoteSource,
+          input.entryQuoteRetrievedAtMs,
+          input.entryQuoteExpiresAtMs,
+          input.openedAtMs,
+        ],
+      );
+      return toLivePaperPosition(rows[0]!);
+    });
+  }
+
+  async close(
+    userId: string,
+    positionId: string,
+    input: CloseLivePaperPositionInput,
+  ): Promise<LivePaperPositionRecord> {
+    return this.db.transaction(async (tx) => {
+      const rows = await tx.query(
+        `select pp.*
+           from paper_positions pp
+           join portfolios p on p.id = pp.portfolio_id
+          where pp.id = $1 and p.user_id = $2
+          for update`,
+        [positionId, userId],
+      );
+      if (!rows[0]) throw new ArbError("POSITION_NOT_FOUND", "Paper position not found", 404);
+      const existing = toLivePaperPosition(rows[0]);
+      if (existing.status === "closed") {
+        throw new ArbError("POSITION_ALREADY_CLOSED", "This paper position is already closed", 409);
+      }
+
+      const realized = input.closeProceedsMicroUsd - existing.entryCostMicroUsd;
+      const updated = await tx.query(
+        `update paper_positions
+            set status = 'closed',
+                close_proceeds_micro_usd = $2,
+                realized_pnl_micro_usd = $3,
+                exit_slippage_bps = $4,
+                exit_price_impact_bps = $5,
+                exit_route = $6::jsonb,
+                exit_quote_source = $7,
+                exit_quote_retrieved_at = to_timestamp($8::double precision / 1000),
+                exit_quote_expires_at = to_timestamp($9::double precision / 1000),
+                closed_at = to_timestamp($10::double precision / 1000)
+          where id = $1 and status = 'open'
+          returning *`,
+        [
+          existing.id,
+          input.closeProceedsMicroUsd.toString(),
+          realized.toString(),
+          input.exitSlippageBps.toString(),
+          input.exitPriceImpactBps.toString(),
+          JSON.stringify(input.exitRoute),
+          input.exitQuoteSource,
+          input.exitQuoteRetrievedAtMs,
+          input.exitQuoteExpiresAtMs,
+          input.closedAtMs,
+        ],
+      );
+      if (!updated[0]) {
+        throw new ArbError("POSITION_ALREADY_CLOSED", "This paper position is already closed", 409);
+      }
+
+      await tx.query(
+        `update portfolios
+            set cash_micro_usd = cash_micro_usd + $2,
+                updated_at = to_timestamp($3::double precision / 1000)
+          where id = $1`,
+        [existing.portfolioId, input.closeProceedsMicroUsd.toString(), input.closedAtMs],
+      );
+      return toLivePaperPosition(updated[0]);
+    });
   }
 }
 

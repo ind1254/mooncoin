@@ -18,6 +18,8 @@ export type ErrorCode =
   | "PRICE_IMPACT_TOO_HIGH"
   | "POSITION_NOT_FOUND"
   | "POSITION_ALREADY_CLOSED"
+  | "PAPER_TRADE_INELIGIBLE"
+  | "POSITION_LIMIT_REACHED"
   /** No live quote could be obtained. Never substituted with a simulated one. */
   | "QUOTE_UNAVAILABLE"
   // Identity and access

@@ -32,6 +32,7 @@ import type { TokenSearchResult } from "../market/types.js";
 import type { RouteComparison, RouteQuote, TokenMarketView } from "../market/types.js";
 import { computeScores, type ScoringLimits, type TokenScores } from "../scoring/scores.js";
 import { PaperTradingEngine } from "../paper/engine.js";
+import { LivePaperTradingService } from "../paper/livePaper.js";
 import { FilePaperStateStore, InMemoryPaperStateStore } from "../paper/store.js";
 import type { PaperPosition, Portfolio } from "../paper/types.js";
 import { NotificationEngine } from "../notify/engine.js";
@@ -1372,6 +1373,20 @@ export function createApp(deps: AppDeps): Express {
     createAuthRouter({
       getAuth: () => deps.auth,
       getDb: () => deps.db,
+      createPaperTrading: (db) =>
+        new LivePaperTradingService(
+          db,
+          tradability,
+          deps.quotes,
+          {
+            startingMicroUsd: usdToMicroUsd(deps.env.PAPER_STARTING_USD),
+            minTradeMicroUsd: usdToMicroUsd(deps.env.PAPER_MIN_TRADE_USD),
+            maxTradeMicroUsd: usdToMicroUsd(deps.env.PAPER_MAX_TRADE_USD),
+            maxOpenPositions: deps.env.PAPER_MAX_OPEN_POSITIONS,
+            maxEntryPriceImpactBps: BigInt(deps.env.TRADABILITY_MAX_PRICE_IMPACT_BPS),
+          },
+          deps.clock,
+        ),
       startingMicroUsd: usdToMicroUsd(deps.env.PAPER_STARTING_USD),
       secureCookies: deps.env.COOKIE_SECURE,
     }),

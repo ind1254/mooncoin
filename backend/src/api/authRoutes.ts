@@ -1,11 +1,11 @@
 import express, { type Request, type Response, type Router } from "express";
 import { z } from "zod";
 import { asArbError, ArbError } from "../core/errors.js";
-import { microToUsdString } from "../core/money.js";
 import type { AuthProvider, AuthenticatedUser } from "../auth/authService.js";
 import { credentialsSchema } from "../auth/authService.js";
 import type { SqlClient } from "../db/client.js";
-import { PortfolioRepository, WatchlistRepository, type PortfolioRecord } from "../db/repositories.js";
+import { PortfolioRepository, WatchlistRepository } from "../db/repositories.js";
+import type { LivePaperTradingService } from "../paper/livePaper.js";
 
 /**
  * Identity and per-user state.
@@ -29,6 +29,8 @@ export interface AuthRoutesOptions {
   /** Resolved per request so persistence can recover without a redeploy. */
   getAuth: () => AuthProvider | undefined;
   getDb: () => SqlClient | undefined;
+  /** Constructed against the current database so persistence may recover at runtime. */
+  createPaperTrading: (db: SqlClient) => LivePaperTradingService;
   startingMicroUsd: bigint;
   /** Set Secure on cookies. Off for plain-HTTP local development. */
   secureCookies: boolean;
@@ -81,26 +83,6 @@ export async function resolveUser(req: Request, auth: AuthProvider): Promise<Aut
   }
 }
 
-function serializePortfolio(p: PortfolioRecord): Record<string, unknown> {
-  return {
-    id: p.id,
-    name: p.name,
-    baseCurrency: p.baseCurrency,
-    simulated: true,
-    cashUsd: microToUsdString(p.cashMicroUsd),
-    startingCashUsd: microToUsdString(p.startingMicroUsd),
-    // No positions yet: paper execution lands in the next milestone.
-    investedUsd: "0.00",
-    totalValueUsd: microToUsdString(p.cashMicroUsd),
-    unrealizedPnlUsd: "0.00",
-    realizedPnlUsd: "0.00",
-    openPositions: 0,
-    createdAtMs: p.createdAtMs,
-    updatedAtMs: p.updatedAtMs,
-    notice: "Paper trading only. This is simulated capital, not real money.",
-  };
-}
-
 /**
  * A database error must not surface as a generic 500. Callers need to know
  * the difference between "you sent something wrong" and "our storage is
@@ -121,7 +103,7 @@ function toSafeError(err: unknown): ArbError {
 
 export function createAuthRouter(options: AuthRoutesOptions): Router {
   const router = express.Router();
-  const { getAuth, getDb, startingMicroUsd, secureCookies } = options;
+  const { getAuth, getDb, createPaperTrading, startingMicroUsd, secureCookies } = options;
 
   const fail = (res: Response, err: unknown): void => {
     const e = toSafeError(err);
@@ -172,6 +154,7 @@ export function createAuthRouter(options: AuthRoutesOptions): Router {
   };
 
   const currentUser = (res: Response): AuthenticatedUser => res.locals.user as AuthenticatedUser;
+  const paperTrading = (): LivePaperTradingService => createPaperTrading(getDb()!);
 
   // ---- Identity ----
 
@@ -248,10 +231,50 @@ export function createAuthRouter(options: AuthRoutesOptions): Router {
   router.get("/v1/me/portfolio", requireAuth, async (_req, res) => {
     try {
       const user = currentUser(res);
-      // Lazily created, so an account made before portfolios existed still
-      // works, and repeated calls cannot fund it twice.
-      const portfolio = await new PortfolioRepository(getDb()!).ensureDefault(user.id, startingMicroUsd);
-      res.json({ portfolio: serializePortfolio(portfolio) });
+      res.json({ portfolio: await paperTrading().getPortfolio(user.id) });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  const paperEntrySchema = z.object({
+    tokenMint: z.string().min(32).max(64),
+    amountUsd: z.union([z.string().min(1).max(32), z.number().finite()]).transform(String),
+    slippageBps: z.coerce.number().int().min(1).max(5_000).default(50),
+  });
+
+  router.post("/v1/me/paper/positions", requireAuth, async (req, res) => {
+    try {
+      const parsed = paperEntrySchema.safeParse(req.body);
+      if (!parsed.success) {
+        throw new ArbError("VALIDATION_ERROR", "Enter a valid mint, USD amount, and slippage setting.", 400);
+      }
+      const position = await paperTrading().openPosition(
+        currentUser(res).id,
+        parsed.data.tokenMint,
+        parsed.data.amountUsd,
+        BigInt(parsed.data.slippageBps),
+      );
+      res.status(201).json({ simulated: true, executionEnabled: false, position });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  const paperCloseSchema = z.object({
+    slippageBps: z.coerce.number().int().min(1).max(5_000).default(50),
+  });
+
+  router.post("/v1/me/paper/positions/:id/close", requireAuth, async (req, res) => {
+    try {
+      const parsed = paperCloseSchema.safeParse(req.body ?? {});
+      if (!parsed.success) throw new ArbError("VALIDATION_ERROR", "Invalid close slippage setting.", 400);
+      const position = await paperTrading().closePosition(
+        currentUser(res).id,
+        req.params.id!,
+        BigInt(parsed.data.slippageBps),
+      );
+      res.json({ simulated: true, executionEnabled: false, position });
     } catch (err) {
       fail(res, err);
     }

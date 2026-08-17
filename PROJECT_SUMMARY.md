@@ -14,7 +14,7 @@ strict safety boundary of **no real trades, no custody, no private keys**.
 
 - **GitHub:** https://github.com/ind1254/mooncoin (branch `main`)
 - **Deployed:** Vercel (serverless config included in repo)
-- **Status:** working prototype / MVP, live Solana discovery and read-only quotes with deterministic paper simulation
+- **Status:** working prototype / MVP, live Solana discovery, authenticated database-backed paper positions, and deterministic demo simulation
 
 ## What it does (five product pillars)
 
@@ -32,13 +32,13 @@ strict safety boundary of **no real trades, no custody, no private keys**.
    trade size: estimated tokens received, effective price, price impact, pool
    fees, network + priority fees, minimum received under slippage, best route
    vs alternatives, quote expiry.
-4. **Paper trade** — simulated positions with virtual SOL: confirmation screen
-   showing every cost, fills at the min-received of the best executable quote,
-   revaluation and closes priced from current executable *sell* quotes (never
-   chart prices), high/low watermarks, entry-condition snapshots.
-5. **Learn** — portfolio dashboard: virtual balance, open/closed positions,
-   win rate, average gain/loss, best/worst trade, fees paid, execution costs,
-   and performance broken down by risk level at entry.
+4. **Paper trade** — authenticated simulated positions for real Solana mints:
+   every entry reruns the seven production gates server-side and stores exact
+   token units at Jupiter's minimum received. Revaluation and closes use fresh,
+   exact-size token-to-USDC quotes (never chart prices).
+5. **Learn** — database-backed portfolio dashboard with virtual cash,
+   open/closed positions, live minimum-received marks, and realized/unrealized
+   P&L. Unavailable quotes are shown as unavailable instead of fabricated.
 
 Also: user settings with sensible defaults, and an in-app notification engine
 with cooldowns and material-change gates where every alert explains why it
@@ -52,7 +52,8 @@ fired ("BONK now matches your balanced strategy: liquidity increased, ...").
   price charts with crosshair tooltips, responsive dark UI.
 - **iOS:** SwiftUI module (covers the earlier arbitrage-calculator feature).
 - **Infra:** GitHub, Vercel serverless deploy (`@vercel/node` + static routing),
-  local JSON persistence, structured JSON logging with correlation IDs.
+  Postgres in production, PGlite for local development/tests, forward-only SQL
+  migrations, structured JSON logging with correlation IDs.
 
 ## Engineering decisions worth mentioning in interviews
 
@@ -78,7 +79,7 @@ fired ("BONK now matches your balanced strategy: liquidity increased, ...").
   the overall score (a pumping rug-pull candidate can never rank "strong").
 - **Token identity by mint address only** — symbols are display-only, which
   kills the classic duplicate-ticker attack on token lists.
-- **Testing:** 217 automated tests: live-feed normalization, production
+- **Testing:** 224 automated tests: live-feed normalization, production
   tradability gates, provider degradation,
   money-math boundaries, scoring evidence,
   paper-engine invariants (balance bookkeeping is exact to the lamport), and
@@ -87,6 +88,10 @@ fired ("BONK now matches your balanced strategy: liquidity increased, ...").
 - **Safety boundary as architecture:** there is no code path that builds,
   signs, or submits a transaction; every API response carries
   `executionEnabled: false`; simulated labels on every surface.
+- **Atomic paper accounting:** entry and exit repositories lock portfolio rows,
+  debit/credit cash and mutate positions in one database transaction, enforce
+  ownership, and prevent double closes. Exact NUMERIC/BigInt values cross the
+  provider, service, and persistence boundaries without float arithmetic.
 
 ## Honest caveats (do NOT overstate these on the resume)
 
@@ -98,9 +103,9 @@ fired ("BONK now matches your balanced strategy: liquidity increased, ...").
   are a model (min-received of best quote) and real execution would differ
   (MEV, partial fills, congestion). Don't claim "trading system" without the
   word "simulated" or "paper."
-- **Single-user prototype.** No auth, no database — local JSON files. The
-  Vercel deployment has ephemeral state (resets on cold start) and no
-  background jobs.
+- **Account system is intentionally minimal.** Password sessions and Postgres
+  persistence are implemented, but account recovery, email verification,
+  production-grade rate limiting, and background jobs are not.
 - **The iOS module belongs to the earlier arbitrage-calculator phase** of the
   project, not the current paper-trading UI, and has not been compiled/tested
   (built on Windows, no Xcode available).
@@ -114,10 +119,10 @@ fired ("BONK now matches your balanced strategy: liquidity increased, ...").
 
 ## Numbers you can cite
 
-- 217 automated tests across 16 suites, all passing; strict-mode TypeScript
-- ~15 REST endpoints (market, paper trading, notifications, settings + legacy)
+- 224 automated tests across 18 suites, all passing; strict-mode TypeScript
+- 34 HTTP routes (market, auth, live/demo paper trading, settings + legacy/admin)
 - 6 seeded market scenarios; 3 simulated venues with distinct fee/liquidity profiles
-- 5 git commits from baseline to deploy-ready on GitHub
+- 2 forward-only Postgres migrations shared by production and local tests
 - Full product: backend engine + web SPA + iOS module (legacy feature) + docs
 
 ## Suggested resume bullets (pick 2–3, adjust to taste)
@@ -144,5 +149,6 @@ fired ("BONK now matches your balanced strategy: liquidity increased, ...").
   score must justify itself to a non-technical user; ML is a later phase)
 - Why deterministic seeded data? (reproducible demos, testable engine, no
   flaky external dependencies during evaluation)
-- What would production need? (live providers, auth + Postgres, rate limiting,
-  push notifications, a real risk-data vendor, security review)
+- What would production need next? (rate limiting, account recovery/email
+  verification, push notifications, a durable chain indexer, a real risk-data
+  vendor, security review)

@@ -6,7 +6,7 @@ A live-research and paper-trading MVP for Solana meme-coin traders. It answers o
 **"Based on current market conditions, what deserves my attention, what are the
 risks, and what would happen if I paper-traded it?"**
 
-> **Prototype — paper trading only.** Every trade is simulated with virtual SOL.
+> **Prototype — paper trading only.** Every trade is simulated with virtual funds.
 > No blockchain transactions are sent, no exchange orders are placed, no funds
 > are held, and no private keys or seed phrases are ever requested or stored.
 > Scores describe current conditions and are **not** predictions of future
@@ -20,28 +20,31 @@ risks, and what would happen if I paper-traded it?"**
 | **Discover** | Live recently-created and five-minute trending Solana token feeds with price, volume, liquidity, freshness, duplicate-ticker warnings, and on-demand production eligibility gates | Research tab |
 | **Evaluate** | Separate momentum / liquidity / execution / risk scores, each with the exact evidence that produced it | Token detail |
 | **Compare execution** | Executable quotes per venue for your exact size: impact, pool fees, network + priority fees, min-received under slippage, best route vs alternatives | Token detail |
-| **Paper trade** | Simulated positions filled at the min-received of the best executable quote, with fees and impact applied; closes priced from live sell quotes — never chart prices | Confirm modal / Portfolio |
-| **Learn** | Virtual balance, open/closed positions, win rate, avg gain/loss, best/worst, fees paid, execution costs, performance by risk level | Portfolio tab |
+| **Paper trade** | Authenticated, persistent positions for real Solana mints. Entries rerun every production gate and store Jupiter's minimum received; closes use a fresh exact-size sell quote — never chart prices | Confirm modal / Portfolio |
+| **Learn** | Database-backed virtual cash, live minimum-received marks, open/closed positions, and realized/unrealized P&L | Portfolio tab |
 
 Plus: watchlist, user settings with sensible defaults, and in-app alerts that
 always explain *why* they fired (with cooldowns and material-change gates).
 
 ## Quick start
 
-Prerequisites: Node.js ≥ 20. No credentials, no API keys, no wallet.
+Prerequisites: Node.js ≥ 20. No provider credentials, API keys, or wallet are
+required for local development.
 
-```bash
+```powershell
 cd backend
 npm install
-npm run dev
+$env:LOCAL_DB="true"
+$env:COOKIE_SECURE="false"
+npm run dev:local
 ```
 
-Open **http://localhost:8787** — the web app. The Research home retrieves live
-New and Trending token feeds from Jupiter; the Simulator and seeded portfolio
-remain deterministic demonstrations.
+On macOS/Linux, use `LOCAL_DB=true COOKIE_SECURE=false npm run dev:local`.
 
-Everything runs locally. State (paper positions, settings) persists to
-`backend/data/*.json`, which is gitignored — delete the folder to reset the demo.
+Open **http://localhost:8787** — the web app. New and Trending token feeds come
+from Jupiter. Create an account to persist watchlist state and live-quote paper
+positions in the local PGlite database. The separate Simulator remains a
+deterministic demonstration.
 
 ### Environment variables
 
@@ -50,13 +53,17 @@ keyless compatibility host by default; production can set `JUPITER_API_KEY` and
 the official `api.jup.ag` URLs. Server-owned eligibility policy is configured by
 `TRADABILITY_MIN_LIQUIDITY_USD` (10,000),
 `TRADABILITY_MAX_PRICE_IMPACT_BPS` (300), and
-`TRADABILITY_MAX_MARKET_AGE_MS` (300,000). Client filters cannot weaken them.
+`TRADABILITY_MAX_MARKET_AGE_MS` (300,000). Live paper limits use
+`PAPER_MIN_TRADE_USD` (10), `PAPER_MAX_TRADE_USD` (10,000), and
+`PAPER_MAX_OPEN_POSITIONS` (25). Client controls cannot weaken these policies.
+Production accounts require `DATABASE_URL`; local development can use
+`LOCAL_DB=true` for the same migrations and constraints in PGlite.
 
 ### Tests & checks
 
 ```bash
 cd backend
-npm test           # 218 tests: feeds/quotes/gates, risk, money math, auth, paper engine, API flow
+npm test           # 224 tests: feeds/quotes/gates, risk, money math, auth, paper engine, API flow
 npm run typecheck  # strict TypeScript, no emit
 ```
 
@@ -72,7 +79,8 @@ backend/src/
                         All values normalized with mint identity, source,
                         timestamp, age, and reliability.
   scoring/              Transparent rule-based scores (0-100) with stored factors
-  paper/                Deterministic BigInt simulation engine + JSON persistence
+  paper/                Deterministic demo engine plus live-quote paper service
+  auth/ db/             Password sessions, Postgres migrations and repositories
   notify/               Notification rules: cooldowns, transitions, explanations
   settings/             Single-user preferences with validated defaults
   api/                  createApp() factory, demo seeding, server entry, legacy
@@ -98,7 +106,9 @@ Jupiter's read-only quote route with no fabricated fallback. The production
 eligibility service combines those independent sources for one exact USDC size:
 fresh catalog timestamp, minimum liquidity, direct mint/freeze authority reads,
 duplicate-symbol warning, fresh route, and maximum impact. The simulator stays
-isolated and honestly labeled demonstration data.
+isolated and honestly labeled demonstration data. Live paper entries rerun the
+same gates server-side, store exact token units and the quoted minimum received,
+and revalue or close with fresh token-to-USDC quotes.
 
 ## API sketch
 
@@ -107,6 +117,13 @@ GET  /health                        GET  /v1/meta
 GET  /v1/feed                       ?kind=recent|trending&minLiquidityUsd&search
 GET  /v1/tradability/:mint          ?amountUsd&slippageBps (seven production gates)
 GET  /v1/quote                      ?inputMint&outputMint&amount&slippageBps
+POST /v1/auth/signup                {email, password}
+POST /v1/auth/signin                {email, password}
+POST /v1/auth/signout
+GET  /v1/me
+GET  /v1/me/portfolio
+POST /v1/me/paper/positions         {tokenMint, amountUsd, slippageBps?}
+POST /v1/me/paper/positions/:id/close {slippageBps?}
 GET  /v1/opportunities              ?tradeSizeSol&risk&minLiquidityUsd&search
 GET  /v1/tokens/:mint               ?tradeSizeSol      (detail + scores + evidence)
 GET  /v1/tokens/:mint/routes        ?tradeSizeSol&slippageBps
@@ -150,8 +167,9 @@ immediately.
 - Solana's public RPC can rate-limit on-chain authority verification. When it
   does, Moonpaper shows verification as unavailable rather than trusting a
   provider claim as chain truth.
-- Single user, local JSON persistence; no auth. A real deployment needs
-  accounts, a database, and rate limiting.
+- Accounts, sessions, watchlists, virtual cash, and live paper positions persist
+  in Postgres (or PGlite locally). The prototype still needs production-grade
+  rate limiting, account recovery, and email verification.
 - In-app notifications only (generated by a 30s server tick); no push.
 - The iOS SwiftUI module covers the original arbitrage calculator, not the new
   paper-trading UI; the web app is the reference front end.

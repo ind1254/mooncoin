@@ -306,6 +306,98 @@
     </div>`;
   }
 
+  function livePaperReportIsUsable(report) {
+    return Boolean(report?.eligible && report.quote && Date.now() < report.quote.expiresAtMs);
+  }
+
+  function openLivePaperTradeModal(token, amountUsd, report) {
+    if (!session.authenticated) return openAuthModal("signup");
+    if (!livePaperReportIsUsable(report)) {
+      return toast("Run a fresh eligible production check before reviewing this paper entry.", "error");
+    }
+    const route = report.quote.route.map((hop) => hop.venue).join(" → ");
+    showModal(`
+      <h3>Review live-quote paper entry — ${esc(token.symbol)}</h3>
+      <div class="tiny muted">Canonical mint <span class="mono">${esc(token.mint.slice(0, 10))}…${esc(token.mint.slice(-8))}</span></div>
+      <div class="sim-notice">SIMULATION ONLY — the server will rerun every production gate and request a fresh read-only Jupiter quote. No wallet is connected and no transaction is built, signed, or submitted.</div>
+      <div id="livePaperErr" class="error-box hidden"></div>
+      <div class="kv"><span class="k">Paper cash to spend</span><span class="v mono">$${esc(amountUsd)} USDC</span></div>
+      <div class="kv"><span class="k">Current minimum received</span><span class="v mono">${esc(report.quote.minimumOutput)}</span></div>
+      <div class="kv"><span class="k">Current route</span><span class="v">${esc(route)}</span></div>
+      <div class="kv"><span class="k">Current price impact</span><span class="v mono">${esc(report.quote.priceImpactPct)}%</span></div>
+      <div class="kv"><span class="k">Fill rule</span><span class="v">Jupiter minimum output</span></div>
+      <div class="tiny faint" style="margin-top:10px">The displayed quote expires in ${Math.max(0, Math.ceil((report.quote.expiresAtMs - Date.now()) / 1000))}s. Confirmation does not trust it: the backend performs the entire check again.</div>
+      <div class="actions">
+        <button class="btn secondary" data-close>Cancel</button>
+        <button class="btn" id="confirmLivePaper">Open paper position</button>
+      </div>
+    `);
+
+    $("confirmLivePaper").addEventListener("click", async () => {
+      const button = $("confirmLivePaper");
+      const error = $("livePaperErr");
+      button.disabled = true;
+      button.textContent = "Rechecking gates…";
+      error.classList.add("hidden");
+      try {
+        const body = await post("/v1/me/paper/positions", {
+          tokenMint: token.mint,
+          amountUsd,
+          slippageBps: 50,
+        });
+        closeModal();
+        toast(`${body.position.token.symbol} live-quote paper position opened`, "ok");
+        location.hash = "#/portfolio";
+        if (state.route.name === "portfolio") render();
+      } catch (err) {
+        error.textContent = err.message;
+        error.classList.remove("hidden");
+        button.disabled = false;
+        button.textContent = "Retry paper entry";
+      }
+    });
+  }
+
+  function openLivePaperCloseModal(position) {
+    const currentValue = position.marketValueUsd === null ? "unavailable" : `$${position.marketValueUsd}`;
+    showModal(`
+      <h3>Close ${esc(position.token.symbol)} paper position</h3>
+      <div class="tiny muted">This closes the entire simulated position using a new exact-size token-to-USDC quote.</div>
+      <div class="sim-notice">SIMULATION ONLY — Moonpaper requests a fresh read-only sell quote and credits only its minimum received amount. No real token is sold.</div>
+      <div id="livePaperCloseErr" class="error-box hidden"></div>
+      <div class="kv"><span class="k">Quantity</span><span class="v mono">${esc(position.quantity)} ${esc(position.token.symbol)}</span></div>
+      <div class="kv"><span class="k">Cost basis</span><span class="v mono">$${esc(position.costBasisUsd)}</span></div>
+      <div class="kv"><span class="k">Latest marked value</span><span class="v mono">${esc(currentValue)}</span></div>
+      <div class="kv"><span class="k">Latest marked P&amp;L</span><span class="v mono ${position.pnlUsd === null ? "muted" : cls(position.pnlUsd)}">${position.pnlUsd === null ? "unavailable" : `${sign(position.pnlUsd)}$${esc(position.pnlUsd)}`}</span></div>
+      <div class="tiny faint" style="margin-top:10px">The final paper proceeds can differ from this mark because the close endpoint requests a new quote.</div>
+      <div class="actions">
+        <button class="btn secondary" data-close>Keep open</button>
+        <button class="btn danger" id="confirmLivePaperClose">Close paper position</button>
+      </div>
+    `);
+
+    $("confirmLivePaperClose").addEventListener("click", async () => {
+      const button = $("confirmLivePaperClose");
+      const error = $("livePaperCloseErr");
+      button.disabled = true;
+      button.textContent = "Requesting sell quote…";
+      error.classList.add("hidden");
+      try {
+        const body = await post(`/v1/me/paper/positions/${encodeURIComponent(position.id)}/close`, {
+          slippageBps: 50,
+        });
+        closeModal();
+        toast(`${body.position.token.symbol} paper position closed`, "ok");
+        render();
+      } catch (err) {
+        error.textContent = err.message;
+        error.classList.remove("hidden");
+        button.disabled = false;
+        button.textContent = "Retry close";
+      }
+    });
+  }
+
   /** The six verification states, in user-facing language. */
   // The pill states the outcome, the blurb states the consequence for the
   // user, and the API's `detail` states the technical reason. Keeping those
@@ -744,6 +836,7 @@
       ? `<img src="${esc(token.iconUrl)}" alt="" loading="lazy" referrerpolicy="no-referrer">`
       : `<span aria-hidden="true">◉</span>`;
     const storedGateReport = state.gateReports.get(token.mint);
+    const paperReady = livePaperReportIsUsable(storedGateReport);
 
     div.innerHTML = `
       <div class="opp-emoji token-icon">${icon}</div>
@@ -772,6 +865,7 @@
         <div class="row" style="flex-wrap:wrap;justify-content:flex-end">
           <button class="star ${token.inWatchlist ? "active" : ""}" title="Watchlist" aria-label="Toggle watchlist">★</button>
           <button class="btn secondary sm-gates">${storedGateReport ? "Check again" : "Check $100 eligibility"}</button>
+          <button class="btn sm-paper ${paperReady ? "" : "hidden"}">Paper buy $100</button>
           <button class="btn sm-research">Research + live quote</button>
         </div>
       </div>
@@ -781,6 +875,7 @@
     div.querySelector(".sm-gates").addEventListener("click", async (event) => {
       const button = event.currentTarget;
       const out = div.querySelector(".gate-check-out");
+      const paperButton = div.querySelector(".sm-paper");
       button.disabled = true;
       button.textContent = "Checking…";
       out.innerHTML = `<div class="sstate"><div class="spinner"></div>Verifying route and chain…</div>`;
@@ -788,10 +883,14 @@
         const report = await api(`/v1/tradability/${encodeURIComponent(token.mint)}?amountUsd=100&slippageBps=50`);
         state.gateReports.set(token.mint, report);
         out.innerHTML = gateReportHtml(report, true);
+        paperButton.classList.toggle("hidden", !livePaperReportIsUsable(report));
         button.textContent = "Check again";
         if (report.quote) {
           setTimeout(() => {
-            if (out.isConnected) out.innerHTML = gateReportHtml(report, true);
+            if (out.isConnected) {
+              out.innerHTML = gateReportHtml(report, true);
+              paperButton.classList.add("hidden");
+            }
           }, Math.max(0, report.quote.expiresAtMs - Date.now()) + 100);
         }
       } catch (err) {
@@ -800,6 +899,10 @@
       } finally {
         button.disabled = false;
       }
+      event.stopPropagation();
+    });
+    div.querySelector(".sm-paper").addEventListener("click", (event) => {
+      openLivePaperTradeModal(token, "100", state.gateReports.get(token.mint));
       event.stopPropagation();
     });
     div.querySelector(".star").addEventListener("click", async (event) => {
@@ -1016,6 +1119,7 @@
               <input type="text" id="quoteAmt" value="100" inputmode="decimal" placeholder="100">
               <button class="btn" id="eligibilityBtn" style="white-space:nowrap">Run production check</button>
               <button class="btn" id="quoteBtn" style="white-space:nowrap">Get quote</button>
+              <button class="btn hidden" id="paperTradeLiveBtn" style="white-space:nowrap">Review paper entry</button>
             </div>
             <div id="eligibilityOut"></div>
             <div id="quoteOut"></div>
@@ -1052,6 +1156,7 @@
     const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
     let quoteTimer = null;
     let eligibilityTimer = null;
+    let lastEligibility = null;
 
     async function runEligibility() {
       const out = $("eligibilityOut");
@@ -1064,13 +1169,19 @@
       try {
         const params = new URLSearchParams({ amountUsd: amt, slippageBps: "50" });
         const report = await api(`/v1/tradability/${encodeURIComponent(d.mint)}?${params}`);
+        lastEligibility = report;
         out.innerHTML = gateReportHtml(report);
+        $("paperTradeLiveBtn").classList.toggle("hidden", !livePaperReportIsUsable(report));
         eligibilityTimer = setInterval(() => {
           const current = $("eligibilityOut");
           if (!current) return clearInterval(eligibilityTimer);
           current.innerHTML = gateReportHtml(report);
+          const paperButton = $("paperTradeLiveBtn");
+          if (paperButton) paperButton.classList.toggle("hidden", !livePaperReportIsUsable(report));
         }, 1_000);
       } catch (err) {
+        lastEligibility = null;
+        $("paperTradeLiveBtn").classList.add("hidden");
         out.innerHTML = `<div class="unavail-block"><div class="unavail-title">Production check unavailable</div><div class="tiny muted">${esc(err.message)}</div></div>`;
       } finally {
         button.disabled = false;
@@ -1141,6 +1252,9 @@
 
     container.querySelector("#quoteBtn").addEventListener("click", getQuote);
     container.querySelector("#eligibilityBtn").addEventListener("click", runEligibility);
+    container.querySelector("#paperTradeLiveBtn").addEventListener("click", () => {
+      openLivePaperTradeModal(d, $("quoteAmt").value.trim(), lastEligibility);
+    });
     container.querySelector("#quoteAmt").addEventListener("keydown", (e) => {
       if (e.key === "Enter") runEligibility();
     });
@@ -1442,31 +1556,77 @@
       return wireSignInPrompt;
     }
     const { portfolio: p } = await api("/v1/me/portfolio");
+    const money = (value) => (value === null ? "Unavailable" : `$${esc(value)}`);
+    const pnl = (value) =>
+      value === null ? "Unavailable" : `${num(value) > 0 ? "+" : ""}$${esc(value)}`;
+    const positionCard = (position) => {
+      const open = position.status === "open";
+      const valueLabel = open ? "Live marked value" : "Exit proceeds";
+      const value = open ? position.marketValueUsd : position.exit.proceedsUsd;
+      const route = open ? position.valuation.route : position.exit.route;
+      const impact = open ? position.valuation.priceImpactPct : position.exit.priceImpactPct;
+      return `<div class="card pos-card live-paper-position" data-paper-id="${esc(position.id)}">
+        <div class="pos-head">
+          <span class="sym">${esc(position.token.symbol)}</span>
+          <span class="chip ${open ? "live-chip" : ""}">${open ? "OPEN" : "CLOSED"} · LIVE-QUOTE PAPER</span>
+          <span class="tiny faint">${open ? "opened" : "closed"} ${ago(open ? position.openedAtMs : position.closedAtMs)}</span>
+          <span style="margin-left:auto" class="pnl mono ${position.pnlUsd === null ? "muted" : cls(position.pnlUsd)}">${pnl(position.pnlUsd)}${position.returnPct === null ? "" : ` <span class="small">(${sign(position.returnPct)}${esc(position.returnPct)}%)</span>`}</span>
+        </div>
+        <div class="mint-line mono" title="${esc(position.token.mint)}">${esc(position.token.mint)}</div>
+        <div class="pos-grid">
+          <div><div class="k">Cost basis</div><div class="v mono">$${esc(position.costBasisUsd)}</div></div>
+          <div><div class="k">Quantity</div><div class="v mono">${esc(position.quantity)} ${esc(position.token.symbol)}</div></div>
+          <div><div class="k">Entry price</div><div class="v mono">$${esc(position.entry.averagePriceUsd)}</div></div>
+          <div><div class="k">Entry route</div><div class="v">${esc(position.entry.route.join(" → "))}</div></div>
+          <div><div class="k">${valueLabel}</div><div class="v mono">${money(value)}</div></div>
+          <div><div class="k">${open ? "Sell quote" : "Exit route"}</div><div class="v">${route ? esc(route.join(" → ")) : "Unavailable"}${impact === null ? "" : ` · ${esc(impact)}% impact`}</div></div>
+        </div>
+        <div class="tiny ${open && position.valuation.status !== "fresh" ? "warn" : "faint"}" style="margin-top:10px">${esc(open ? position.valuation.detail : "Closed using the stored minimum received from a fresh Jupiter sell quote.")}</div>
+        <div class="row" style="justify-content:flex-end;margin-top:10px;flex-wrap:wrap">
+          <button class="btn secondary paper-research">Research mint</button>
+          ${open ? `<button class="btn danger live-paper-close">Close with live quote</button>` : ""}
+        </div>
+      </div>`;
+    };
+    const openPositions = p.positions.filter((position) => position.status === "open");
+    const closedPositions = p.positions.filter((position) => position.status === "closed");
     container.innerHTML = `
       <div class="summary-strip">
         <div class="stat"><div class="k">PAPER CASH</div><div class="v mono">$${esc(p.cashUsd)}</div><div class="s">simulated USD</div></div>
         <div class="stat"><div class="k">INVESTED</div><div class="v mono">$${esc(p.investedUsd)}</div><div class="s">${p.openPositions} open positions</div></div>
-        <div class="stat"><div class="k">TOTAL VALUE</div><div class="v mono">$${esc(p.totalValueUsd)}</div><div class="s">started at $${esc(p.startingCashUsd)}</div></div>
-        <div class="stat"><div class="k">UNREALIZED P&amp;L</div><div class="v mono">$${esc(p.unrealizedPnlUsd)}</div><div class="s">open positions</div></div>
-        <div class="stat"><div class="k">REALIZED P&amp;L</div><div class="v mono">$${esc(p.realizedPnlUsd)}</div><div class="s">closed trades</div></div>
+        <div class="stat"><div class="k">TOTAL VALUE</div><div class="v mono">${money(p.totalValueUsd)}</div><div class="s">started at $${esc(p.startingCashUsd)}</div></div>
+        <div class="stat"><div class="k">UNREALIZED P&amp;L</div><div class="v mono ${p.unrealizedPnlUsd === null ? "muted" : cls(p.unrealizedPnlUsd)}">${pnl(p.unrealizedPnlUsd)}</div><div class="s">minimum-received sell marks</div></div>
+        <div class="stat"><div class="k">REALIZED P&amp;L</div><div class="v mono ${cls(p.realizedPnlUsd)}">${pnl(p.realizedPnlUsd)}</div><div class="s">${p.closedPositions} closed trades</div></div>
       </div>
       <div class="tiny warn" style="margin-bottom:16px">${esc(p.notice)}</div>
 
       <div class="card">
-        <h3>Positions</h3>
-        <div class="empty" style="padding:26px 12px">
-          No positions yet.<br>
-          <span class="tiny faint">Paper execution against live Jupiter quotes is the next milestone. Until then this account holds cash only.</span>
+        <div class="row spread" style="flex-wrap:wrap;gap:8px">
+          <h3>Live-quote paper positions</h3>
+          <span class="tiny muted">${esc(p.limits.minEntryUsd)}–${esc(p.limits.maxEntryUsd)} USD per entry · max ${p.limits.maxOpenPositions} open</span>
         </div>
+        ${p.positions.length ? "" : `<div class="empty" style="padding:26px 12px">No positions yet.<br><span class="tiny faint">Run an eligible production check on a live token, then choose Paper buy.</span></div>`}
       </div>
+
+      ${openPositions.length ? `<h3 style="margin:16px 0 10px">Open positions</h3><div>${openPositions.map(positionCard).join("")}</div>` : ""}
+      ${closedPositions.length ? `<h3 style="margin:16px 0 10px">Closed positions</h3><div>${closedPositions.map(positionCard).join("")}</div>` : ""}
 
       <div class="card" style="margin-top:14px">
         <h3>Account</h3>
         <div class="kv"><span class="k">Signed in as</span><span class="v">${esc(session.user.email)}</span></div>
         <div class="kv"><span class="k">Base currency</span><span class="v">${esc(p.baseCurrency)}</span></div>
         <div class="kv"><span class="k">Opened</span><span class="v">${new Date(p.createdAtMs).toLocaleDateString()}</span></div>
-        <div class="tiny faint" style="margin-top:10px">This portfolio is stored in Moonpaper's database, so it survives sign-out, refreshes and server restarts.</div>
+        <div class="tiny faint" style="margin-top:10px">Cash and positions are stored in Moonpaper's database. Market values are requested live and become unavailable rather than falling back to invented prices.</div>
       </div>`;
+
+    container.querySelectorAll(".live-paper-position").forEach((card) => {
+      const position = p.positions.find((item) => item.id === card.dataset.paperId);
+      card.querySelector(".paper-research").addEventListener("click", () => {
+        location.hash = `#/research/${position.token.mint}`;
+      });
+      const close = card.querySelector(".live-paper-close");
+      if (close) close.addEventListener("click", () => openLivePaperCloseModal(position));
+    });
   }
 
   // ---------- Watchlist ----------
