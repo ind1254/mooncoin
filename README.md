@@ -2,7 +2,7 @@
 
 *Practice the moonshot — risk nothing.*
 
-A paper-trading MVP for Solana meme-coin traders. It answers one question:
+A live-research and paper-trading MVP for Solana meme-coin traders. It answers one question:
 **"Based on current market conditions, what deserves my attention, what are the
 risks, and what would happen if I paper-traded it?"**
 
@@ -10,14 +10,14 @@ risks, and what would happen if I paper-traded it?"**
 > No blockchain transactions are sent, no exchange orders are placed, no funds
 > are held, and no private keys or seed phrases are ever requested or stored.
 > Scores describe current conditions and are **not** predictions of future
-> returns. In the default demo mode, all market data is clearly-labeled
-> deterministic demonstration data.
+> returns. The New and Trending feeds use live Jupiter catalog data; trading
+> remains simulation-only and the legacy simulator stays clearly labeled.
 
 ## The five pillars
 
 | Pillar | What it does | Where |
 |---|---|---|
-| **Discover** | Ranked meme-coin opportunities with price, volume, liquidity, freshness, risk level, and a transparent quality score | Discover tab |
+| **Discover** | Live recently-created and five-minute trending Solana token feeds with price, volume, liquidity, freshness, risk gates, and a transparent research score | Research tab |
 | **Evaluate** | Separate momentum / liquidity / execution / risk scores, each with the exact evidence that produced it | Token detail |
 | **Compare execution** | Executable quotes per venue for your exact size: impact, pool fees, network + priority fees, min-received under slippage, best route vs alternatives | Token detail |
 | **Paper trade** | Simulated positions filled at the min-received of the best executable quote, with fees and impact applied; closes priced from live sell quotes — never chart prices | Confirm modal / Portfolio |
@@ -36,8 +36,9 @@ npm install
 npm run dev
 ```
 
-Open **http://localhost:8787** — the web app, seeded with a demo portfolio
-(one open position, one profitable close, one losing close, alerts).
+Open **http://localhost:8787** — the web app. The Research home retrieves live
+New and Trending token feeds from Jupiter; the Simulator and seeded portfolio
+remain deterministic demonstrations.
 
 Everything runs locally. State (paper positions, settings) persists to
 `backend/data/*.json`, which is gitignored — delete the folder to reset the demo.
@@ -52,7 +53,7 @@ All optional — see [backend/.env.example](backend/.env.example):
 
 ```bash
 cd backend
-npm test           # 55 tests: money math, scoring, paper engine, API flow, legacy engine
+npm test           # 211 tests: live feeds/quotes, risk, money math, auth, paper engine, API flow
 npm run typecheck  # strict TypeScript, no emit
 ```
 
@@ -62,8 +63,9 @@ npm run typecheck  # strict TypeScript, no emit
 web/                    Vanilla-JS SPA (no build step) — Discover, token detail,
                         trade confirmation, portfolio, settings, alerts drawer
 backend/src/
-  market/               Provider interfaces (discovery, history, liquidity, risk,
-                        routing) + deterministic seeded demo implementation.
+  market/               Provider interfaces plus live Jupiter token/search/feed
+                        and quote adapters, Solana mint verification, and the
+                        deterministic seeded simulator.
                         All values normalized with mint identity, source,
                         timestamp, age, and reliability.
   scoring/              Transparent rule-based scores (0-100) with stored factors
@@ -86,17 +88,17 @@ bigint micro-USD, token prices are bigint pico-USD, token amounts are bigint
 base units. Floats appear only when *generating* simulated market data and in
 display formatting — never in balances or P&L.
 
-**Provider boundary:** the UI, scoring, and simulation depend only on the
-normalized interfaces in `market/types.ts`. Swapping the demo simulator for
-live providers (DEX APIs, an indexer, a risk service) means implementing those
-interfaces — no UI or engine rewrites. The mock provider is honest about what
-it is: every response is labeled demonstration data, and it never claims to
-represent real market execution.
+**Provider boundary:** live discovery uses Jupiter Tokens V2 (`recent` and
+`toptraded/5m`) with a 10-second cache. Arbitrary-token research resolves by
+mint and verifies authority settings through read-only Solana RPC. Quotes use
+Jupiter's read-only quote route with no fabricated fallback. The simulator is
+still isolated and honestly labeled demonstration data.
 
 ## API sketch
 
 ```
 GET  /health                        GET  /v1/meta
+GET  /v1/feed                       ?kind=recent|trending&minLiquidityUsd&search
 GET  /v1/opportunities              ?tradeSizeSol&risk&minLiquidityUsd&search
 GET  /v1/tokens/:mint               ?tradeSizeSol      (detail + scores + evidence)
 GET  /v1/tokens/:mint/routes        ?tradeSizeSol&slippageBps
@@ -128,8 +130,14 @@ immediately.
 
 ## Known limitations
 
-- **No live market data yet** — the demo simulator is the only provider.
-  The provider interfaces are the integration point for real sources.
+- The live home feed is request-driven and cached for 10 seconds; it is not a
+  durable chain-indexing pipeline and does not backfill missed program events.
+- Jupiter catalog presence and reported liquidity do not prove that a route is
+  executable for a particular size. The UI requires the user to request a
+  fresh read-only quote before treating execution as available.
+- Solana's public RPC can rate-limit on-chain authority verification. When it
+  does, Moonpaper shows verification as unavailable rather than trusting a
+  provider claim as chain truth.
 - Single user, local JSON persistence; no auth. A real deployment needs
   accounts, a database, and rate limiting.
 - In-app notifications only (generated by a 30s server tick); no push.

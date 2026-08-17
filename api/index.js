@@ -20,8 +20,15 @@ const deps = createDefaultDeps();
 // resolved, and a failure inside is caught and logged rather than thrown.
 await initPersistence(deps);
 
-seedIfDemo(deps);
-runNotificationTick(deps).catch(() => undefined);
+// The legacy notification tick evaluates the deterministic simulator catalog.
+// Running it in live mode creates misleading demo alerts and six unnecessary
+// Solana RPC reads on every serverless cold start. Keep it only in the
+// explicitly selected demo environment; live discovery has its own 10-second
+// request-driven refresh path and never needs a background tick.
+if (deps.env.MARKET_MODE === "demo") {
+  seedIfDemo(deps);
+  runNotificationTick(deps).catch(() => undefined);
+}
 
 const app = createApp(deps);
 export default app;

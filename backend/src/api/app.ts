@@ -19,6 +19,11 @@ import { createDemoBundle } from "../market/demoProviders.js";
 import { createLiveBundle } from "../market/liveProviders.js";
 import { MarketDataService } from "../market/service.js";
 import { JupiterTokenSearchProvider } from "../market/jupiter/tokenSearch.js";
+import {
+  JupiterLiveFeedProvider,
+  type LiveFeedToken,
+  type LiveTokenFeedProvider,
+} from "../market/jupiter/liveFeed.js";
 import { JupiterQuoteProvider, type QuoteProvider } from "../market/jupiter/quotes.js";
 import { ResearchService, type ResearchProfile } from "../market/research.js";
 import { SolanaRpcClient } from "../market/solana/rpc.js";
@@ -64,6 +69,8 @@ export interface AppDeps {
   research: ResearchService;
   /** Read-only swap quotes. Never used to build or submit a transaction. */
   quotes: QuoteProvider;
+  /** Live recent/trending Solana token catalog. Never implies route availability. */
+  liveFeed: LiveTokenFeedProvider;
   /**
    * Persistence for accounts and per-user state. Absent when DATABASE_URL is
    * not configured: research and quotes still work, personal features do not.
@@ -112,11 +119,25 @@ export function createDefaultDeps(overrides: Partial<AppDeps> = {}): AppDeps {
   const settings = overrides.settings ?? new FileSettingsStore(join(env.DATA_DIR, "settings.json"));
   const research = overrides.research ?? buildResearchService(env, clock, market);
   const quotes = overrides.quotes ?? new JupiterQuoteProvider({ baseUrl: env.JUPITER_QUOTE_URL, clock });
+  const liveFeed =
+    overrides.liveFeed ?? new JupiterLiveFeedProvider({ baseUrl: env.JUPITER_TOKENS_URL, clock });
 
   // Persistence is attached later by initPersistence(). Constructing it here
   // would require importing the Postgres driver at module scope, and a driver
   // that fails to resolve would take the entire application down with it.
-  return { env, clock, market, engine, notify, settings, research, quotes, db: overrides.db, auth: overrides.auth };
+  return {
+    env,
+    clock,
+    market,
+    engine,
+    notify,
+    settings,
+    research,
+    quotes,
+    liveFeed,
+    db: overrides.db,
+    auth: overrides.auth,
+  };
 }
 
 export type PersistenceStatus = "ok" | "unconfigured" | "unavailable" | "schema_missing";
@@ -230,6 +251,10 @@ export function createTestDeps(clock: () => number, env?: Partial<AppEnv>): AppD
       clock,
       fetchImpl: async () => new Response("{}", { status: 503 }),
     }),
+    liveFeed: new JupiterLiveFeedProvider({
+      clock,
+      fetchImpl: async () => new Response("[]", { status: 200 }),
+    }),
   };
 }
 
@@ -312,6 +337,134 @@ function hasDuplicateSymbols(results: TokenSearchResult[]): boolean {
 
 const usdOrNull = (v: bigint | null): string | null => (v === null ? null : microToUsdString(v));
 const pctOrNull = (v: bigint | null): string | null => (v === null ? null : pctStr(v));
+
+function sumVolume(token: LiveFeedToken, window: "fiveMinutes" | "oneHour" | "twentyFourHours"): bigint | null {
+  const value = token[window];
+  if (value.buyVolumeUsdMicro === null && value.sellVolumeUsdMicro === null) return null;
+  return (value.buyVolumeUsdMicro ?? 0n) + (value.sellVolumeUsdMicro ?? 0n);
+}
+
+function liveFeedAssessment(token: LiveFeedToken, nowMs: number): Record<string, unknown> {
+  const market = token.token.market;
+  const liquidity = market.liquidityUsdMicro;
+  const topHolders = market.topHolderPctBps;
+  const ageMs = token.firstPoolAtMs === null ? null : Math.max(0, nowMs - token.firstPoolAtMs);
+  const authority = token.token.providerClaims;
+  let risk = 0;
+  const warnings: string[] = [];
+
+  if (liquidity === null || liquidity < 10_000n * 1_000_000n) {
+    risk += 30;
+    warnings.push(liquidity === null ? "Liquidity not reported" : "Very thin liquidity");
+  } else if (liquidity < 50_000n * 1_000_000n) {
+    risk += 14;
+    warnings.push("Thin liquidity");
+  }
+  if (topHolders === null) {
+    risk += 8;
+    warnings.push("Holder concentration unavailable");
+  } else if (topHolders >= 4_000n) {
+    risk += 28;
+    warnings.push("Top holders control at least 40%");
+  } else if (topHolders >= 2_000n) {
+    risk += 12;
+    warnings.push("Concentrated ownership");
+  }
+  if (authority.mintAuthorityDisabled !== true) {
+    risk += 18;
+    warnings.push("Mint authority not confirmed disabled");
+  }
+  if (authority.freezeAuthorityDisabled !== true) {
+    risk += 14;
+    warnings.push("Freeze authority not confirmed disabled");
+  }
+  if (ageMs !== null && ageMs < 10 * 60_000) {
+    risk += 10;
+    warnings.push("Pool detected less than 10 minutes ago");
+  }
+
+  const fiveMinuteVolume = sumVolume(token, "fiveMinutes") ?? 0n;
+  let quality = 0;
+  if (liquidity !== null) {
+    quality += liquidity >= 1_000_000n * 1_000_000n ? 30 : liquidity >= 250_000n * 1_000_000n ? 24 : liquidity >= 50_000n * 1_000_000n ? 17 : liquidity >= 10_000n * 1_000_000n ? 9 : 2;
+  }
+  quality += fiveMinuteVolume >= 100_000n * 1_000_000n ? 25 : fiveMinuteVolume >= 25_000n * 1_000_000n ? 19 : fiveMinuteVolume >= 5_000n * 1_000_000n ? 12 : fiveMinuteVolume > 0n ? 5 : 0;
+  quality += token.fiveMinutes.traders !== null ? Math.min(15, Math.round(token.fiveMinutes.traders / 10)) : 0;
+  quality += Math.min(15, Math.max(0, Math.round((market.organicScore ?? 0) * 0.15)));
+  quality += authority.mintAuthorityDisabled === true ? 8 : 0;
+  quality += authority.freezeAuthorityDisabled === true ? 7 : 0;
+  quality = Math.max(0, Math.min(100, quality - Math.floor(risk / 4)));
+
+  const status =
+    market.priceUsdPico === null || liquidity === null
+      ? "detected"
+      : liquidity < 10_000n * 1_000_000n
+        ? "thin"
+        : "active";
+  const riskLevel = risk >= 45 ? "high" : risk >= 20 ? "medium" : "low";
+
+  return {
+    status,
+    qualityScore: quality,
+    riskScore: Math.min(100, risk),
+    riskLevel,
+    warnings: warnings.slice(0, 4),
+    eligibility:
+      status === "active"
+        ? "Market data is active. Request a live quote to confirm an executable route for your size."
+        : status === "thin"
+          ? "Liquidity is below Moonpaper's $10k research threshold."
+          : "Detected by Jupiter, but complete pricing and liquidity are not available yet.",
+  };
+}
+
+function serializeLiveFeedToken(token: LiveFeedToken, nowMs: number, inWatchlist: boolean): Record<string, unknown> {
+  const market = token.token.market;
+  const updatedAgeSeconds = token.updatedAtMs === null ? null : Math.max(0, Math.round((nowMs - token.updatedAtMs) / 1000));
+  const volume = (window: "fiveMinutes" | "oneHour" | "twentyFourHours") => usdOrNull(sumVolume(token, window));
+  const serializeWindow = (window: LiveFeedToken["fiveMinutes"]) => ({
+    priceChangePct: pctOrNull(window.priceChangeBps),
+    liquidityChangePct: pctOrNull(window.liquidityChangeBps),
+    volumeChangePct: pctOrNull(window.volumeChangeBps),
+    buyVolumeUsd: usdOrNull(window.buyVolumeUsdMicro),
+    sellVolumeUsd: usdOrNull(window.sellVolumeUsdMicro),
+    buys: window.buys,
+    sells: window.sells,
+    traders: window.traders,
+  });
+
+  return {
+    mint: token.token.mint,
+    symbol: token.token.symbol,
+    name: token.token.name,
+    decimals: token.token.decimals,
+    iconUrl: token.token.iconUrl,
+    tokenProgram: token.token.tokenProgram,
+    tags: token.token.tags,
+    launchpad: token.launchpad,
+    verifiedByProvider: token.token.verifiedByProvider,
+    source: token.token.source,
+    firstPoolAtMs: token.firstPoolAtMs,
+    updatedAtMs: token.updatedAtMs,
+    updatedAgeSeconds,
+    reliability: updatedAgeSeconds === null ? "unavailable" : updatedAgeSeconds <= 60 ? "fresh" : updatedAgeSeconds <= 300 ? "stale" : "unavailable",
+    priceUsd: market.priceUsdPico === null ? null : picoUsdToPriceString(market.priceUsdPico),
+    liquidityUsd: usdOrNull(market.liquidityUsdMicro),
+    marketCapUsd: usdOrNull(market.marketCapUsdMicro),
+    holderCount: market.holderCount,
+    topHolderPct: pctOrNull(market.topHolderPctBps),
+    organicScore: market.organicScore,
+    fiveMinuteVolumeUsd: volume("fiveMinutes"),
+    oneHourVolumeUsd: volume("oneHour"),
+    twentyFourHourVolumeUsd: volume("twentyFourHours"),
+    stats5m: serializeWindow(token.fiveMinutes),
+    stats1h: serializeWindow(token.oneHour),
+    stats24h: serializeWindow(token.twentyFourHours),
+    providerClaims: token.token.providerClaims,
+    assessment: liveFeedAssessment(token, nowMs),
+    inWatchlist,
+  };
+}
 
 function serializeSearchResult(r: TokenSearchResult): Record<string, unknown> {
   return {
@@ -558,6 +711,7 @@ export function createApp(deps: AppDeps): Express {
     executionEnabled: false,
     dataSource: deps_.market.bundle.dataSourceLabel,
     isDemoData: deps_.market.bundle.isDemo,
+    liveFeedSource: deps_.liveFeed.source,
   });
 
   /**
@@ -614,6 +768,67 @@ export function createApp(deps: AppDeps): Express {
         duplicateSymbols: hasDuplicateSymbols(results),
         source: deps.research.searchSource,
         results: results.map(serializeSearchResult),
+      });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  // ---- Live discovery: current Solana tokens, separate from the simulator ----
+  const liveFeedQuery = z.object({
+    kind: z.enum(["recent", "trending"]).default("recent"),
+    limit: z.coerce.number().int().min(1).max(100).default(30),
+    minLiquidityUsd: z.coerce.number().min(0).optional(),
+    search: z.string().max(80).optional(),
+  });
+
+  app.get("/v1/feed", async (req, res) => {
+    try {
+      const q = liveFeedQuery.safeParse(req.query);
+      if (!q.success) {
+        throw new ArbError("VALIDATION_ERROR", "Invalid live-feed query parameters", 400, {
+          issues: q.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`),
+        });
+      }
+
+      const abort = new AbortController();
+      req.on("close", () => abort.abort());
+      const feed = await deps.liveFeed.getFeed(q.data.kind, abort.signal);
+      const settings = deps.settings.get();
+      const nowMs = deps.clock();
+      let tokens = feed.tokens;
+
+      if (q.data.minLiquidityUsd !== undefined) {
+        const threshold = BigInt(Math.round(q.data.minLiquidityUsd)) * 1_000_000n;
+        tokens = tokens.filter((item) => (item.token.market.liquidityUsdMicro ?? 0n) >= threshold);
+      }
+      if (q.data.search) {
+        const needle = q.data.search.toLowerCase();
+        tokens = tokens.filter(
+          (item) =>
+            item.token.symbol.toLowerCase().includes(needle) ||
+            item.token.name.toLowerCase().includes(needle) ||
+            item.token.mint.toLowerCase().includes(needle),
+        );
+      }
+      tokens = tokens.slice(0, q.data.limit);
+
+      res.json({
+        ...meta(deps),
+        live: true,
+        simulatedMarketData: false,
+        kind: feed.kind,
+        source: feed.source,
+        fetchedAtMs: feed.fetchedAtMs,
+        ageSeconds: Math.max(0, Math.round((nowMs - feed.fetchedAtMs) / 1000)),
+        reliability: feed.reliability,
+        refreshAfterMs: 10_000,
+        count: tokens.length,
+        notice:
+          "Live catalog data is not an execution guarantee. Request a quote to verify a route and inspect the mint on-chain before any paper decision.",
+        tokens: tokens.map((item) =>
+          serializeLiveFeedToken(item, nowMs, settings.watchlist.includes(item.token.mint)),
+        ),
       });
     } catch (err) {
       fail(res, err);

@@ -155,6 +155,22 @@ label.field { display: block; font-size: 11px; font-weight: 700; color: var(--mu
 }
 .opp-card:hover { border-color: var(--accent); }
 .opp-emoji { font-size: 30px; width: 48px; height: 48px; display: flex; align-items: center; justify-content: center; background: var(--panel-2); border-radius: 12px; }
+.token-icon { overflow: hidden; flex: 0 0 48px; }
+.token-icon img { width: 100%; height: 100%; object-fit: cover; }
+.mint-line { margin: 5px 0 8px; color: var(--muted); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.eligibility { margin-top: 8px; line-height: 1.45; }
+.live-feed-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin: 20px 0 12px; }
+.live-feed-head h2 { margin: 3px 0 4px; }
+.eyebrow { color: var(--green); font: 700 10px/1.2 var(--mono); letter-spacing: .14em; }
+.feed-pulse { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 7px; color: var(--green); border: 1px solid rgba(46,204,113,.35); background: var(--green-soft); border-radius: 999px; padding: 7px 10px; font: 700 10px/1 var(--mono); }
+.feed-pulse i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 4px rgba(46,204,113,.12); }
+.feed-pulse.stale { color: var(--yellow); border-color: rgba(241,196,15,.35); }
+.feed-tabs { display: inline-flex; gap: 4px; padding: 4px; margin: 0 0 12px; border: 1px solid var(--border); background: var(--panel); border-radius: 10px; }
+.feed-tabs button { border: 0; background: transparent; color: var(--muted); padding: 8px 14px; border-radius: 7px; cursor: pointer; font: 700 11px/1 var(--mono); }
+.feed-tabs button.active { color: var(--text); background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--border); }
+.live-filters { padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: rgba(255,255,255,.015); }
+.feed-source { display: flex; flex-direction: column; justify-content: center; gap: 5px; min-width: 220px !important; }
+.portfolio-heading { margin-top: 30px; }
 .opp-main { min-width: 0; }
 .opp-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .opp-title .sym { font-weight: 800; font-size: 15px; }
