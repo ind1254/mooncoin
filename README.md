@@ -56,7 +56,7 @@ the official `api.jup.ag` URLs. Server-owned eligibility policy is configured by
 
 ```bash
 cd backend
-npm test           # 217 tests: feeds/quotes/gates, risk, money math, auth, paper engine, API flow
+npm test           # 218 tests: feeds/quotes/gates, risk, money math, auth, paper engine, API flow
 npm run typecheck  # strict TypeScript, no emit
 ```
 

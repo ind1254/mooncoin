@@ -22,6 +22,29 @@ export interface PgClientOptions {
   ssl?: boolean;
 }
 
+const LEGACY_STRICT_SSL_MODES = new Set(["prefer", "require", "verify-ca"]);
+const SSL_QUERY_PARAMETERS = ["sslmode", "ssl", "sslcert", "sslkey", "sslrootcert"];
+
+/**
+ * Keep node-postgres TLS behavior explicit as pg-connection-string changes its
+ * legacy sslmode aliases. Hosted databases use certificate verification;
+ * callers that explicitly disable TLS get a URL with TLS parameters removed.
+ */
+export function normalizePgConnectionString(connectionString: string, sslEnabled: boolean): string {
+  const url = new URL(connectionString);
+
+  if (!sslEnabled) {
+    for (const parameter of SSL_QUERY_PARAMETERS) url.searchParams.delete(parameter);
+    return url.toString();
+  }
+
+  const sslMode = url.searchParams.get("sslmode")?.toLowerCase();
+  if (!sslMode || LEGACY_STRICT_SSL_MODES.has(sslMode)) {
+    url.searchParams.set("sslmode", "verify-full");
+  }
+  return url.toString();
+}
+
 class PoolBackedClient implements SqlClient {
   constructor(private readonly pool: pg.Pool) {}
 
@@ -67,12 +90,13 @@ class PoolBackedClient implements SqlClient {
 }
 
 export function createPgClient(options: PgClientOptions): SqlClient {
+  const sslEnabled = options.ssl !== false;
   const pool = new pg.Pool({
-    connectionString: options.connectionString,
+    connectionString: normalizePgConnectionString(options.connectionString, sslEnabled),
     max: options.maxConnections ?? 3,
     idleTimeoutMillis: 10_000,
     connectionTimeoutMillis: 8_000,
-    ...(options.ssl === false ? {} : { ssl: { rejectUnauthorized: false } }),
+    ...(sslEnabled ? {} : { ssl: false }),
   });
   // A pool error must not take the process down on a serverless instance.
   pool.on("error", (err) => {
