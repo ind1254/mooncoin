@@ -41,7 +41,7 @@ function usdToScaled(value: number, scale: bigint, scaleDigits: number): bigint 
 const toMicroUsd = (v: number): bigint => usdToScaled(v, 1_000_000n, 6);
 const toPicoUsd = (v: number): bigint => usdToScaled(v, 1_000_000_000_000n, 12);
 
-const statsSchema = z
+export const jupiterStatsSchema = z
   .object({
     priceChange: z.number().optional(),
     liquidityChange: z.number().optional(),
@@ -54,7 +54,7 @@ const statsSchema = z
   })
   .passthrough();
 
-const tokenSchema = z
+export const jupiterTokenSchema = z
   .object({
     // Identity — required. Without these the record is unusable.
     id: z.string().min(32).max(64),
@@ -86,17 +86,17 @@ const tokenSchema = z
       })
       .passthrough()
       .optional(),
-    stats5m: statsSchema.optional(),
-    stats1h: statsSchema.optional(),
-    stats24h: statsSchema.optional(),
+    stats5m: jupiterStatsSchema.optional(),
+    stats1h: jupiterStatsSchema.optional(),
+    stats24h: jupiterStatsSchema.optional(),
   })
   .passthrough();
 
-const searchResponseSchema = z.array(tokenSchema);
+const searchResponseSchema = z.array(jupiterTokenSchema);
 
-type RawToken = z.infer<typeof tokenSchema>;
+export type JupiterRawToken = z.infer<typeof jupiterTokenSchema>;
 
-function normalize(raw: RawToken): TokenSearchResult {
+export function normalizeJupiterToken(raw: JupiterRawToken): TokenSearchResult {
   const a = raw.audit;
   const s24 = raw.stats24h;
   const num = (v: number | undefined): number | null => (typeof v === "number" ? v : null);
@@ -214,6 +214,6 @@ export class JupiterTokenSearchProvider implements TokenSearchProvider {
     if (!parsed.success) {
       throw new ArbError("MALFORMED_PROVIDER_RESPONSE", "Unrecognized token search response", 502);
     }
-    return parsed.data.map(normalize);
+    return parsed.data.map(normalizeJupiterToken);
   }
 }

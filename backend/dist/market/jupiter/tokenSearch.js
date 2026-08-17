@@ -35,7 +35,7 @@ function usdToScaled(value, scale, scaleDigits) {
 }
 const toMicroUsd = (v) => usdToScaled(v, 1000000n, 6);
 const toPicoUsd = (v) => usdToScaled(v, 1000000000000n, 12);
-const statsSchema = z
+export const jupiterStatsSchema = z
     .object({
     priceChange: z.number().optional(),
     liquidityChange: z.number().optional(),
@@ -47,7 +47,7 @@ const statsSchema = z
     numTraders: z.number().optional(),
 })
     .passthrough();
-const tokenSchema = z
+export const jupiterTokenSchema = z
     .object({
     // Identity — required. Without these the record is unusable.
     id: z.string().min(32).max(64),
@@ -79,13 +79,13 @@ const tokenSchema = z
     })
         .passthrough()
         .optional(),
-    stats5m: statsSchema.optional(),
-    stats1h: statsSchema.optional(),
-    stats24h: statsSchema.optional(),
+    stats5m: jupiterStatsSchema.optional(),
+    stats1h: jupiterStatsSchema.optional(),
+    stats24h: jupiterStatsSchema.optional(),
 })
     .passthrough();
-const searchResponseSchema = z.array(tokenSchema);
-function normalize(raw) {
+const searchResponseSchema = z.array(jupiterTokenSchema);
+export function normalizeJupiterToken(raw) {
     const a = raw.audit;
     const s24 = raw.stats24h;
     const num = (v) => (typeof v === "number" ? v : null);
@@ -188,6 +188,6 @@ export class JupiterTokenSearchProvider {
         if (!parsed.success) {
             throw new ArbError("MALFORMED_PROVIDER_RESPONSE", "Unrecognized token search response", 502);
         }
-        return parsed.data.map(normalize);
+        return parsed.data.map(normalizeJupiterToken);
     }
 }

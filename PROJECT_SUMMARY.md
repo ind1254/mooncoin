@@ -14,13 +14,13 @@ strict safety boundary of **no real trades, no custody, no private keys**.
 
 - **GitHub:** https://github.com/ind1254/mooncoin (branch `main`)
 - **Deployed:** Vercel (serverless config included in repo)
-- **Status:** working prototype / MVP, demo mode with deterministic simulated data
+- **Status:** working prototype / MVP, live Solana discovery and read-only quotes with deterministic paper simulation
 
 ## What it does (five product pillars)
 
-1. **Discover** — ranked opportunity list with price, volume, liquidity, data
-   freshness, risk level, and a 0–100 quality score; filters for trade size,
-   risk tolerance, minimum liquidity, and search; watchlist.
+1. **Discover** — live recently-created and five-minute trending Solana token
+   feeds from Jupiter with price, volume, liquidity, freshness, risk gates,
+   a 0–100 research score, minimum-liquidity filters, and canonical mint IDs.
 2. **Evaluate** — separate momentum / liquidity / execution / token-risk scores,
    each expandable to the exact evidence that produced it (e.g. "volume up 82%
    vs previous hour", "top 10 wallets hold 62% of supply", "mint authority
@@ -75,7 +75,8 @@ fired ("BONK now matches your balanced strategy: liquidity increased, ...").
   the overall score (a pumping rug-pull candidate can never rank "strong").
 - **Token identity by mint address only** — symbols are display-only, which
   kills the classic duplicate-ticker attack on token lists.
-- **Testing:** 55 automated tests: money-math boundaries, scoring evidence,
+- **Testing:** 211 automated tests: live-feed normalization, provider degradation,
+  money-math boundaries, scoring evidence,
   paper-engine invariants (balance bookkeeping is exact to the lamport), and
   API integration tests running the full user flow against an in-memory app
   with a controllable clock.
@@ -85,11 +86,10 @@ fired ("BONK now matches your balanced strategy: liquidity increased, ...").
 
 ## Honest caveats (do NOT overstate these on the resume)
 
-- **No live market data yet.** The only data provider is the deterministic
-  demo simulator. The app is honest about this (labeled "demonstration data"
-  everywhere), and the provider interfaces are the designed integration point
-  for real sources (Jupiter, Birdeye, Helius-class APIs) — but no live
-  integration has been built or tested. Don't claim "real-time market data."
+- **Live but not a chain indexer.** The home feed retrieves Jupiter's current
+  `recent` and `toptraded/5m` catalogs with a 10-second cache. It does not run a
+  durable program-log consumer or backfill missed chain events. Catalog data is
+  not claimed to prove an executable route; the separate quote request does.
 - **Paper trading only.** No real trades were ever executed; simulated fills
   are a model (min-received of best quote) and real execution would differ
   (MEV, partial fills, congestion). Don't claim "trading system" without the
@@ -110,7 +110,7 @@ fired ("BONK now matches your balanced strategy: liquidity increased, ...").
 
 ## Numbers you can cite
 
-- 55 automated tests across 5 suites, all passing; strict-mode TypeScript
+- 211 automated tests across 15 suites, all passing; strict-mode TypeScript
 - ~15 REST endpoints (market, paper trading, notifications, settings + legacy)
 - 6 seeded market scenarios; 3 simulated venues with distinct fee/liquidity profiles
 - 5 git commits from baseline to deploy-ready on GitHub
