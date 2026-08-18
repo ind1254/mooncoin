@@ -25,6 +25,7 @@ export type ErrorCode =
   // Identity and access
   | "UNAUTHORIZED"
   | "FORBIDDEN"
+  | "EMAIL_VERIFICATION_REQUIRED"
   | "ORIGIN_NOT_ALLOWED"
   | "RATE_LIMITED"
   | "DATABASE_ERROR";

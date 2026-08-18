@@ -22,6 +22,7 @@ if (!deps.db && process.env.LOCAL_DB === "true") {
   const { createLocalDevClient } = await import("../db/localDev.js");
   const { migrate } = await import("../db/migrate.js");
   const { PasswordAuthProvider } = await import("../auth/authService.js");
+  const { AccountLifecycleService, ResendEmailSender } = await import("../auth/accountLifecycle.js");
   const localDb = await createLocalDevClient(join(deps.env.DATA_DIR, "pgdata"));
   if (localDb) {
     await migrate(localDb);
@@ -29,6 +30,16 @@ if (!deps.db && process.env.LOCAL_DB === "true") {
     deps.auth = new PasswordAuthProvider(localDb, {
       clock: deps.clock,
       sessionTtlMs: deps.env.SESSION_TTL_DAYS * 86_400_000,
+      emailVerificationRequired: deps.env.EMAIL_VERIFICATION_REQUIRED,
+    });
+    const sender =
+      deps.env.RESEND_API_KEY && deps.env.ACCOUNT_EMAIL_FROM
+        ? new ResendEmailSender({ apiKey: deps.env.RESEND_API_KEY, from: deps.env.ACCOUNT_EMAIL_FROM })
+        : undefined;
+    deps.accountLifecycle = new AccountLifecycleService(localDb, {
+      ...(sender ? { sender } : {}),
+      appBaseUrl: deps.env.PUBLIC_APP_URL,
+      clock: deps.clock,
     });
     console.log(JSON.stringify({ msg: "local dev database ready", dir: join(deps.env.DATA_DIR, "pgdata") }));
   }

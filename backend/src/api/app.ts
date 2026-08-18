@@ -41,6 +41,7 @@ import { createLegacyArbitrageRouter } from "./legacyArbitrage.js";
 import { seedDemoState } from "./demoSeed.js";
 import { createAuthRouter } from "./authRoutes.js";
 import { PasswordAuthProvider, type AuthProvider } from "../auth/authService.js";
+import { AccountLifecycleService, ResendEmailSender } from "../auth/accountLifecycle.js";
 import type { SqlClient } from "../db/client.js";
 // NOTE: the Postgres driver is NOT imported here. A static top-level import
 // makes the whole application unloadable if the driver is missing from the
@@ -79,6 +80,8 @@ export interface AppDeps {
    */
   db?: SqlClient | undefined;
   auth?: AuthProvider | undefined;
+  /** Verification/recovery exists with persistence, even if email delivery is off. */
+  accountLifecycle?: AccountLifecycleService | undefined;
   /** Why persistence is absent, for diagnostics. Never contains credentials. */
   persistenceError?: string | undefined;
 }
@@ -185,6 +188,16 @@ export async function initPersistence(deps: AppDeps): Promise<void> {
     deps.auth = new PasswordAuthProvider(db, {
       clock: deps.clock,
       sessionTtlMs: deps.env.SESSION_TTL_DAYS * 86_400_000,
+      emailVerificationRequired: deps.env.EMAIL_VERIFICATION_REQUIRED,
+    });
+    const sender =
+      deps.env.RESEND_API_KEY && deps.env.ACCOUNT_EMAIL_FROM
+        ? new ResendEmailSender({ apiKey: deps.env.RESEND_API_KEY, from: deps.env.ACCOUNT_EMAIL_FROM })
+        : undefined;
+    deps.accountLifecycle = new AccountLifecycleService(db, {
+      ...(sender ? { sender } : {}),
+      appBaseUrl: deps.env.PUBLIC_APP_URL,
+      clock: deps.clock,
     });
   } catch (err) {
     // Never include the connection string: it carries credentials.
@@ -879,6 +892,12 @@ export function createApp(deps: AppDeps): Express {
       // "ok" only when we proved migrations ran; unknown when we cannot reach it.
       migrations: persistence.status === "ok" ? "ok" : persistence.status === "schema_missing" ? "missing" : "unknown",
       accountsEnabled,
+      accountLifecycle: {
+        available: accountsEnabled && Boolean(deps.accountLifecycle),
+        emailDeliveryConfigured: deps.accountLifecycle?.deliveryConfigured ?? false,
+        verificationRequired: deps.env.EMAIL_VERIFICATION_REQUIRED,
+        provider: deps.accountLifecycle?.deliveryKind ?? null,
+      },
       safeguards: {
         securityHeaders: true,
         sameOriginWrites: true,
@@ -1436,6 +1455,7 @@ export function createApp(deps: AppDeps): Express {
     createAuthRouter({
       getAuth: () => deps.auth,
       getDb: () => deps.db,
+      getAccountLifecycle: () => deps.accountLifecycle,
       createPaperTrading: (db) =>
         new LivePaperTradingService(
           db,
@@ -1460,6 +1480,7 @@ export function createApp(deps: AppDeps): Express {
         paperWindowMs: deps.env.PAPER_RATE_LIMIT_WINDOW_MS,
       },
       secureCookies: deps.env.COOKIE_SECURE,
+      emailVerificationRequired: deps.env.EMAIL_VERIFICATION_REQUIRED,
     }),
   );
 

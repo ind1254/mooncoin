@@ -21,6 +21,7 @@ import { hashPassword, verifyPassword } from "./password.js";
 export interface AuthenticatedUser {
   id: string;
   email: string;
+  emailVerified: boolean;
 }
 
 export interface AuthSession {
@@ -50,6 +51,8 @@ const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 export interface PasswordAuthOptions {
   sessionTtlMs?: number;
   clock?: () => number;
+  /** New accounts remain unverified only when the deployment can enforce it. */
+  emailVerificationRequired?: boolean;
 }
 
 export class PasswordAuthProvider implements AuthProvider {
@@ -58,12 +61,14 @@ export class PasswordAuthProvider implements AuthProvider {
   private readonly sessions: SessionRepository;
   private readonly ttlMs: number;
   private readonly clock: () => number;
+  private readonly emailVerificationRequired: boolean;
 
   constructor(db: SqlClient, options: PasswordAuthOptions = {}) {
     this.users = new UserRepository(db);
     this.sessions = new SessionRepository(db);
     this.ttlMs = options.sessionTtlMs ?? SESSION_TTL_MS;
     this.clock = options.clock ?? Date.now;
+    this.emailVerificationRequired = options.emailVerificationRequired ?? false;
   }
 
   async signUp(email: string, password: string): Promise<AuthSession> {
@@ -74,7 +79,11 @@ export class PasswordAuthProvider implements AuthProvider {
       // no privacy while making the form unusable.
       throw new ArbError("VALIDATION_ERROR", "An account with that email already exists", 409);
     }
-    const user = await this.users.create(email, await hashPassword(password));
+    const user = await this.users.create(
+      email,
+      await hashPassword(password),
+      this.emailVerificationRequired ? null : this.clock(),
+    );
     return this.issueSession(user);
   }
 
@@ -99,7 +108,7 @@ export class PasswordAuthProvider implements AuthProvider {
   async verify(token: string): Promise<AuthenticatedUser | null> {
     if (!token) return null;
     const user = await this.sessions.findValidUser(token, this.clock());
-    return user ? { id: user.id, email: user.email } : null;
+    return user ? this.toAuthenticatedUser(user) : null;
   }
 
   private async issueSession(user: UserRecord): Promise<AuthSession> {
@@ -108,6 +117,10 @@ export class PasswordAuthProvider implements AuthProvider {
     const token = randomBytes(32).toString("base64url");
     const expiresAtMs = this.clock() + this.ttlMs;
     await this.sessions.create(token, user.id, expiresAtMs);
-    return { user: { id: user.id, email: user.email }, token, expiresAtMs };
+    return { user: this.toAuthenticatedUser(user), token, expiresAtMs };
+  }
+
+  private toAuthenticatedUser(user: UserRecord): AuthenticatedUser {
+    return { id: user.id, email: user.email, emailVerified: user.emailVerifiedAtMs !== null };
   }
 }

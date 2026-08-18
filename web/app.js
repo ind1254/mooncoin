@@ -31,6 +31,18 @@
     setTimeout(() => t.remove(), 4200);
   }
 
+  // Dynamic provider images are optional decoration. Remove failed images via
+  // a delegated listener so the main page can keep a strict script-src CSP
+  // without inline onerror handlers.
+  document.addEventListener(
+    "error",
+    (event) => {
+      const target = event.target;
+      if (target instanceof HTMLImageElement && target.dataset.removeOnError === "true") target.remove();
+    },
+    true,
+  );
+
   // A local developer can fix a stopped server; a visitor to the deployed app
   // cannot, so the two situations must never share an error message.
   const isLocalDev = () => ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
@@ -90,6 +102,8 @@
   // ---------- routing ----------
   function parseHash() {
     const h = location.hash.replace(/^#\/?/, "");
+    if (h.startsWith("verify-email/")) return { name: "verify-email", token: h.slice(13) };
+    if (h.startsWith("reset-password/")) return { name: "reset-password", token: h.slice(15) };
     if (h.startsWith("research/")) return { name: "research", mint: h.slice(9) };
     if (h.startsWith("token/")) return { name: "token", mint: h.slice(6) };
     if (h === "portfolio" || h === "settings" || h === "watchlist" || h === "simulator") return { name: h };
@@ -99,14 +113,23 @@
   // ---------- session ----------
   // The browser never asserts identity. It asks the server who it is, and the
   // server answers from the httpOnly session cookie the page cannot read.
-  const session = { loading: true, authenticated: false, user: null, accountsEnabled: true };
+  const session = {
+    loading: true,
+    authenticated: false,
+    user: null,
+    accountsEnabled: true,
+    emailVerificationRequired: false,
+    emailDeliveryConfigured: false,
+  };
 
   async function loadSession() {
     try {
       const body = await api("/v1/me");
       session.authenticated = body.authenticated;
       session.user = body.user;
-      if (body.accountsEnabled === false) session.accountsEnabled = false;
+      session.accountsEnabled = body.accountsEnabled !== false;
+      session.emailVerificationRequired = body.emailVerificationRequired === true;
+      session.emailDeliveryConfigured = body.emailDeliveryConfigured === true;
     } catch {
       session.authenticated = false;
       session.user = null;
@@ -130,6 +153,7 @@
     el.innerHTML = session.authenticated
       ? `<div class="account-chip" title="${esc(session.user.email)}">
            <span class="avatar">${esc((session.user.email || "?")[0].toUpperCase())}</span>
+           ${session.emailVerificationRequired && session.user.emailVerified === false ? `<button class="verify-pill" id="resendVerifyBtn" title="Send a new verification email">verify email</button>` : ""}
            <button class="linkbtn" id="signOutBtn">Sign out</button>
          </div>`
       : `<button class="btn" id="signInBtn" style="padding:7px 14px;font-size:13px">Sign in</button>`;
@@ -137,6 +161,8 @@
     const signIn = $("signInBtn");
     if (signIn) signIn.addEventListener("click", () => openAuthModal("signin"));
     const signOut = $("signOutBtn");
+    const resend = $("resendVerifyBtn");
+    if (resend) resend.addEventListener("click", resendVerification);
     if (signOut)
       signOut.addEventListener("click", async () => {
         await post("/v1/auth/signout").catch(() => undefined);
@@ -170,10 +196,13 @@
         ${isSignUp ? "Already have an account?" : "New to Moonpaper?"}
         <button class="linkbtn" id="authSwap">${isSignUp ? "Sign in" : "Create one"}</button>
       </div>
+      ${isSignUp ? "" : `<div class="tiny faint" style="margin-top:8px;text-align:center"><button class="linkbtn" id="forgotPassword">Forgot password?</button></div>`}
       <div class="sim-notice">Moonpaper is paper trading only. It never connects a wallet, requests keys, or moves real assets.</div>
     `);
 
     $("authSwap").addEventListener("click", () => openAuthModal(isSignUp ? "signin" : "signup"));
+    const forgot = $("forgotPassword");
+    if (forgot) forgot.addEventListener("click", () => openForgotPasswordModal($("authEmail").value.trim()));
 
     const submit = async () => {
       const email = $("authEmail").value.trim();
@@ -189,7 +218,16 @@
         session.user = body.user;
         closeModal();
         renderAccountArea();
-        toast(isSignUp ? "Account created — $100,000 paper capital ready" : "Signed in", "ok");
+        toast(
+          isSignUp && body.verificationRequired
+            ? body.verificationEmailSent
+              ? "Account created — check your email to enable paper actions"
+              : "Account created — use Verify email to request a new link"
+            : isSignUp
+              ? "Account created — $100,000 paper capital ready"
+              : "Signed in",
+          "ok",
+        );
         render();
       } catch (e) {
         err.textContent = e.message;
@@ -204,6 +242,57 @@
       if (e.key === "Enter") submit();
     });
     $("authEmail").focus();
+  }
+
+  function openForgotPasswordModal(initialEmail = "") {
+    showModal(`
+      <h3>Reset your password</h3>
+      <div class="tiny muted" style="margin-top:4px">Enter your account email. For privacy, Moonpaper always gives the same response.</div>
+      <div id="recoveryMsg" class="error-box hidden"></div>
+      <label class="field" style="margin-top:12px">EMAIL</label>
+      <input type="text" id="recoveryEmail" autocomplete="email" value="${esc(initialEmail)}" placeholder="you@example.com">
+      <div class="actions">
+        <button class="btn secondary" data-close>Cancel</button>
+        <button class="btn" id="recoverySubmit">Send reset link</button>
+      </div>
+    `);
+    const submit = async () => {
+      const button = $("recoverySubmit");
+      const message = $("recoveryMsg");
+      button.disabled = true;
+      button.textContent = "Sending…";
+      try {
+        const body = await post("/v1/auth/forgot-password", { email: $("recoveryEmail").value.trim() });
+        message.textContent = body.message;
+        message.classList.remove("hidden");
+        message.classList.add("success-box");
+        button.textContent = "Sent";
+      } catch (error) {
+        message.textContent = error.message;
+        message.classList.remove("hidden");
+        button.disabled = false;
+        button.textContent = "Send reset link";
+      }
+    };
+    $("recoverySubmit").addEventListener("click", submit);
+    $("recoveryEmail").addEventListener("keydown", (event) => {
+      if (event.key === "Enter") submit();
+    });
+    $("recoveryEmail").focus();
+  }
+
+  async function resendVerification() {
+    const button = $("resendVerifyBtn");
+    if (button) button.disabled = true;
+    try {
+      const body = await post("/v1/auth/resend-verification");
+      toast(body.alreadyVerified ? "Email is already verified" : "Verification email sent", "ok");
+      if (body.alreadyVerified) await loadSession();
+    } catch (error) {
+      toast(error.message, "error");
+    } finally {
+      if (button) button.disabled = false;
+    }
   }
 
   /** Shown wherever a personal feature needs an account. */
@@ -233,7 +322,9 @@
 
   function setActiveTab() {
     document.querySelectorAll("[data-nav]").forEach((b) => {
-      const target = state.route.name === "token" || state.route.name === "research" ? "discover" : state.route.name;
+      const target = ["token", "research", "verify-email", "reset-password"].includes(state.route.name)
+        ? "discover"
+        : state.route.name;
       b.classList.toggle("active", b.dataset.nav === target);
     });
   }
@@ -579,7 +670,7 @@
     const liq = r.liquidityUsd ? usd(r.liquidityUsd) : "—";
     return `
       <div class="sresult ${i === search.active ? "active" : ""}" role="option" data-mint="${esc(r.mint)}" data-i="${i}" aria-selected="${i === search.active}" tabindex="-1">
-        <div class="sresult-icon">${r.iconUrl ? `<img src="${esc(r.iconUrl)}" alt="" loading="lazy" onerror="this.remove()">` : "◎"}</div>
+        <div class="sresult-icon">${r.iconUrl ? `<img src="${esc(r.iconUrl)}" alt="" loading="lazy" data-remove-on-error="true">` : "◎"}</div>
         <div class="sresult-main">
           <div class="sresult-top">
             <span class="sresult-sym">${esc(r.symbol)}</span>
@@ -1032,7 +1123,7 @@
       <button class="back" id="backBtn">← Back to search</button>
 
       <div class="research-head">
-        <div class="rh-icon">${d.iconUrl ? `<img src="${esc(d.iconUrl)}" alt="" onerror="this.remove()">` : "◎"}</div>
+        <div class="rh-icon">${d.iconUrl ? `<img src="${esc(d.iconUrl)}" alt="" data-remove-on-error="true">` : "◎"}</div>
         <div class="rh-main">
           <div class="row" style="flex-wrap:wrap;gap:8px">
             <h2>${esc(d.symbol)}</h2>
@@ -1924,6 +2015,89 @@
     $("modalRoot").innerHTML = "";
   }
 
+  async function renderEmailVerification(container, rawToken) {
+    container.innerHTML = `<div class="loading-block"><div class="spinner"></div>Verifying your email…</div>`;
+    try {
+      if (!/^[A-Za-z0-9_-]{43}$/.test(rawToken)) throw new Error("This verification link is invalid or expired.");
+      await post("/v1/auth/verify-email", { token: rawToken });
+      // Remove the bearer secret from browser history as soon as it has been
+      // consumed, even though fragments never reach the HTTP server.
+      history.replaceState(null, "", `${location.pathname}${location.search}#/`);
+      state.route = { name: "discover" };
+      await loadSession();
+      container.innerHTML = `
+        <div class="empty">
+          <div style="font-size:18px;font-weight:800;color:var(--green);margin-bottom:8px">Email verified</div>
+          <div>Your paper portfolio and watchlist actions are now enabled.</div>
+          <button class="btn" id="verificationContinue" style="margin-top:16px">Continue researching</button>
+        </div>`;
+      return () => $("verificationContinue").addEventListener("click", render);
+    } catch (error) {
+      container.innerHTML = `
+        <div class="empty">
+          <div style="font-size:16px;font-weight:800;color:var(--red);margin-bottom:8px">Could not verify this email</div>
+          <div>${esc(error.message)}</div>
+          ${session.authenticated ? `<button class="btn secondary" id="verificationResend" style="margin-top:16px">Send a new link</button>` : ""}
+        </div>`;
+      return () => {
+        const resend = $("verificationResend");
+        if (resend) resend.addEventListener("click", resendVerification);
+      };
+    }
+  }
+
+  function renderPasswordReset(container, rawToken) {
+    container.innerHTML = `
+      <section class="panel" style="max-width:520px;margin:40px auto">
+        <h2>Choose a new password</h2>
+        <p class="small muted" style="margin-top:6px">Use at least 10 characters. Updating it signs the account out on every device.</p>
+        <div id="resetErr" class="error-box hidden"></div>
+        <label class="field" style="margin-top:14px">NEW PASSWORD</label>
+        <input type="password" id="resetPassword" autocomplete="new-password" placeholder="At least 10 characters">
+        <label class="field" style="margin-top:10px">CONFIRM PASSWORD</label>
+        <input type="password" id="resetConfirm" autocomplete="new-password" placeholder="Repeat your new password">
+        <div class="actions"><button class="btn" id="resetSubmit">Update password</button></div>
+      </section>`;
+    return () => {
+      const submit = async () => {
+        const errorBox = $("resetErr");
+        const password = $("resetPassword").value;
+        const confirm = $("resetConfirm").value;
+        errorBox.classList.add("hidden");
+        if (password !== confirm) {
+          errorBox.textContent = "The passwords do not match.";
+          errorBox.classList.remove("hidden");
+          return;
+        }
+        const button = $("resetSubmit");
+        button.disabled = true;
+        button.textContent = "Updating…";
+        try {
+          if (!/^[A-Za-z0-9_-]{43}$/.test(rawToken)) throw new Error("This password-reset link is invalid or expired.");
+          await post("/v1/auth/reset-password", { token: rawToken, password });
+          history.replaceState(null, "", `${location.pathname}${location.search}#/`);
+          state.route = { name: "discover" };
+          session.authenticated = false;
+          session.user = null;
+          renderAccountArea();
+          openAuthModal("signin");
+          toast("Password updated — sign in again", "ok");
+          render();
+        } catch (error) {
+          errorBox.textContent = error.message;
+          errorBox.classList.remove("hidden");
+          button.disabled = false;
+          button.textContent = "Update password";
+        }
+      };
+      $("resetSubmit").addEventListener("click", submit);
+      $("resetConfirm").addEventListener("keydown", (event) => {
+        if (event.key === "Enter") submit();
+      });
+      $("resetPassword").focus();
+    };
+  }
+
   // ---------- render root ----------
   let renderSeq = 0;
   async function render() {
@@ -1937,7 +2111,9 @@
       if (!state.settings) await loadSettings();
       const target = document.createElement("div");
       let after = null;
-      if (state.route.name === "research") after = await renderResearch(target, state.route.mint);
+      if (state.route.name === "verify-email") after = await renderEmailVerification(target, state.route.token);
+      else if (state.route.name === "reset-password") after = renderPasswordReset(target, state.route.token);
+      else if (state.route.name === "research") after = await renderResearch(target, state.route.mint);
       else if (state.route.name === "token") after = await renderToken(target, state.route.mint);
       else if (state.route.name === "portfolio") after = await renderAccountPortfolio(target);
       else if (state.route.name === "watchlist") after = await renderWatchlist(target);
@@ -1951,7 +2127,8 @@
       if (typeof after === "function") after();
     } catch (err) {
       if (seq !== renderSeq) return;
-      container.innerHTML = `<div class="empty">⚠ ${esc(err.message)}<br><br><button class="btn secondary" onclick="location.reload()">Retry</button></div>`;
+      container.innerHTML = `<div class="empty">⚠ ${esc(err.message)}<br><br><button class="btn secondary" id="renderRetry">Retry</button></div>`;
+      $("renderRetry").addEventListener("click", () => location.reload());
     }
   }
 

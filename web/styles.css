@@ -334,6 +334,12 @@ canvas.spark { max-width: 100%; }
 /* ---------- account ---------- */
 .account-area { display: flex; align-items: center; flex-shrink: 0; }
 .account-chip { display: flex; align-items: center; gap: 8px; }
+.verify-pill {
+  border: 1px solid rgba(245,166,35,.45); border-radius: 999px;
+  background: var(--orange-soft); color: var(--orange); cursor: pointer;
+  padding: 3px 8px; font-size: 10px; font-weight: 800; text-transform: uppercase;
+}
+.verify-pill:disabled { opacity: .55; cursor: wait; }
 .account-chip .avatar {
   width: 28px; height: 28px; border-radius: 50%;
   background: var(--accent-soft); color: var(--accent);
@@ -351,6 +357,7 @@ input[type="password"] {
   padding: 9px 12px; outline: none; width: 100%;
 }
 input[type="password"]:focus { border-color: var(--accent); }
+.success-box { color: var(--green) !important; border-color: rgba(46,204,113,.35) !important; background: var(--green-soft) !important; }
 
 /* ---------- live quote ---------- */
 .quote-card {

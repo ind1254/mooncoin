@@ -16,11 +16,13 @@ export class PasswordAuthProvider {
     sessions;
     ttlMs;
     clock;
+    emailVerificationRequired;
     constructor(db, options = {}) {
         this.users = new UserRepository(db);
         this.sessions = new SessionRepository(db);
         this.ttlMs = options.sessionTtlMs ?? SESSION_TTL_MS;
         this.clock = options.clock ?? Date.now;
+        this.emailVerificationRequired = options.emailVerificationRequired ?? false;
     }
     async signUp(email, password) {
         const existing = await this.users.findByEmail(email);
@@ -30,7 +32,7 @@ export class PasswordAuthProvider {
             // no privacy while making the form unusable.
             throw new ArbError("VALIDATION_ERROR", "An account with that email already exists", 409);
         }
-        const user = await this.users.create(email, await hashPassword(password));
+        const user = await this.users.create(email, await hashPassword(password), this.emailVerificationRequired ? null : this.clock());
         return this.issueSession(user);
     }
     async signIn(email, password) {
@@ -53,7 +55,7 @@ export class PasswordAuthProvider {
         if (!token)
             return null;
         const user = await this.sessions.findValidUser(token, this.clock());
-        return user ? { id: user.id, email: user.email } : null;
+        return user ? this.toAuthenticatedUser(user) : null;
     }
     async issueSession(user) {
         // 256 bits of entropy: not guessable, and opaque so it carries no claims
@@ -61,6 +63,9 @@ export class PasswordAuthProvider {
         const token = randomBytes(32).toString("base64url");
         const expiresAtMs = this.clock() + this.ttlMs;
         await this.sessions.create(token, user.id, expiresAtMs);
-        return { user: { id: user.id, email: user.email }, token, expiresAtMs };
+        return { user: this.toAuthenticatedUser(user), token, expiresAtMs };
+    }
+    toAuthenticatedUser(user) {
+        return { id: user.id, email: user.email, emailVerified: user.emailVerifiedAtMs !== null };
     }
 }

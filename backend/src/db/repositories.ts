@@ -18,6 +18,7 @@ import { readBigInt, readDateMs, readString, type SqlClient, type SqlRow } from 
 export interface UserRecord {
   id: string;
   email: string;
+  emailVerifiedAtMs: number | null;
   createdAtMs: number;
 }
 
@@ -234,6 +235,7 @@ function toUser(row: SqlRow): UserRecord {
   return {
     id: readString(row.id),
     email: readString(row.email),
+    emailVerifiedAtMs: readNullableDateMs(row.email_verified_at),
     createdAtMs: readDateMs(row.created_at),
   };
 }
@@ -259,7 +261,7 @@ export class UserRepository {
   /** Email comparison is case-insensitive, matching the unique index. */
   async findByEmail(email: string): Promise<(UserRecord & { passwordHash: string }) | null> {
     const rows = await this.db.query(
-      "select id, email, password_hash, created_at from users where lower(email) = lower($1)",
+      "select id, email, password_hash, email_verified_at, created_at from users where lower(email) = lower($1)",
       [email],
     );
     const row = rows[0];
@@ -267,14 +269,16 @@ export class UserRepository {
   }
 
   async findById(id: string): Promise<UserRecord | null> {
-    const rows = await this.db.query("select id, email, created_at from users where id = $1", [id]);
+    const rows = await this.db.query("select id, email, email_verified_at, created_at from users where id = $1", [id]);
     return rows[0] ? toUser(rows[0]) : null;
   }
 
-  async create(email: string, passwordHash: string): Promise<UserRecord> {
+  async create(email: string, passwordHash: string, emailVerifiedAtMs: number | null = Date.now()): Promise<UserRecord> {
     const rows = await this.db.query(
-      "insert into users (email, password_hash) values ($1, $2) returning id, email, created_at",
-      [email, passwordHash],
+      `insert into users (email, password_hash, email_verified_at)
+       values ($1, $2, case when $3::double precision is null then null else to_timestamp($3 / 1000) end)
+       returning id, email, email_verified_at, created_at`,
+      [email.trim().toLowerCase(), passwordHash, emailVerifiedAtMs],
     );
     return toUser(rows[0]!);
   }
@@ -301,7 +305,7 @@ export class SessionRepository {
   /** Returns the owning user only if the session exists and has not expired. */
   async findValidUser(token: string, nowMs: number): Promise<UserRecord | null> {
     const rows = await this.db.query(
-      `select u.id, u.email, u.created_at
+      `select u.id, u.email, u.email_verified_at, u.created_at
          from sessions s
          join users u on u.id = s.user_id
         where s.token_hash = $1
@@ -315,12 +319,123 @@ export class SessionRepository {
     await this.db.query("delete from sessions where token_hash = $1", [hashSessionToken(token)]);
   }
 
+  async deleteForUser(userId: string): Promise<number> {
+    const rows = await this.db.query("delete from sessions where user_id = $1 returning token_hash", [userId]);
+    return rows.length;
+  }
+
   async deleteExpired(nowMs: number): Promise<number> {
     const rows = await this.db.query(
       "delete from sessions where expires_at <= to_timestamp($1::double precision / 1000) returning token_hash",
       [nowMs],
     );
     return rows.length;
+  }
+}
+
+export type AccountActionPurpose = "verify_email" | "reset_password";
+
+export function hashAccountActionToken(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+/**
+ * Short-lived account actions use one-time bearer tokens. Issuance revokes
+ * older tokens for the same purpose; consumption and the protected mutation
+ * happen in one transaction so concurrent replays cannot both succeed.
+ */
+export class AccountActionTokenRepository {
+  constructor(private readonly db: SqlClient) {}
+
+  async issue(
+    userId: string,
+    purpose: AccountActionPurpose,
+    rawToken: string,
+    nowMs: number,
+    expiresAtMs: number,
+  ): Promise<string> {
+    return this.db.transaction(async (tx) => {
+      await tx.query(
+        `update account_action_tokens
+            set consumed_at = to_timestamp($3::double precision / 1000)
+          where user_id = $1 and purpose = $2 and consumed_at is null`,
+        [userId, purpose, nowMs],
+      );
+      const rows = await tx.query<{ id: string }>(
+        `insert into account_action_tokens (user_id, purpose, token_hash, created_at, expires_at)
+         values (
+           $1, $2, $3,
+           to_timestamp($4::double precision / 1000),
+           to_timestamp($5::double precision / 1000)
+         ) returning id`,
+        [userId, purpose, hashAccountActionToken(rawToken), nowMs, expiresAtMs],
+      );
+      return readString(rows[0]!.id);
+    });
+  }
+
+  async verifyEmail(rawToken: string, nowMs: number): Promise<UserRecord | null> {
+    return this.db.transaction(async (tx) => {
+      const rows = await tx.query(
+        `select a.id as action_id, u.id, u.email, u.email_verified_at, u.created_at
+           from account_action_tokens a
+           join users u on u.id = a.user_id
+          where a.token_hash = $1 and a.purpose = 'verify_email'
+            and a.consumed_at is null
+            and a.expires_at > to_timestamp($2::double precision / 1000)
+          for update`,
+        [hashAccountActionToken(rawToken), nowMs],
+      );
+      if (!rows[0]) return null;
+      await tx.query(
+        `update users
+            set email_verified_at = to_timestamp($2::double precision / 1000),
+                updated_at = to_timestamp($2::double precision / 1000)
+          where id = $1`,
+        [readString(rows[0].id), nowMs],
+      );
+      await tx.query(
+        `update account_action_tokens
+            set consumed_at = to_timestamp($2::double precision / 1000)
+          where id = $1 and consumed_at is null`,
+        [readString(rows[0].action_id), nowMs],
+      );
+      return { ...toUser(rows[0]), emailVerifiedAtMs: nowMs };
+    });
+  }
+
+  async resetPassword(rawToken: string, passwordHash: string, nowMs: number): Promise<UserRecord | null> {
+    return this.db.transaction(async (tx) => {
+      const rows = await tx.query(
+        `select a.id as action_id, u.id, u.email, u.email_verified_at, u.created_at
+           from account_action_tokens a
+           join users u on u.id = a.user_id
+          where a.token_hash = $1 and a.purpose = 'reset_password'
+            and a.consumed_at is null
+            and a.expires_at > to_timestamp($2::double precision / 1000)
+          for update`,
+        [hashAccountActionToken(rawToken), nowMs],
+      );
+      if (!rows[0]) return null;
+      const userId = readString(rows[0].id);
+      await tx.query(
+        `update users
+            set password_hash = $2,
+                updated_at = to_timestamp($3::double precision / 1000)
+          where id = $1`,
+        [userId, passwordHash, nowMs],
+      );
+      await tx.query(
+        `update account_action_tokens
+            set consumed_at = to_timestamp($2::double precision / 1000)
+          where id = $1 and consumed_at is null`,
+        [readString(rows[0].action_id), nowMs],
+      );
+      // A password change is an account-recovery boundary. Every browser must
+      // authenticate again, including a session an attacker may have stolen.
+      await tx.query("delete from sessions where user_id = $1", [userId]);
+      return toUser(rows[0]);
+    });
   }
 }
 

@@ -86,7 +86,7 @@ function toSafeError(err) {
 }
 export function createAuthRouter(options) {
     const router = express.Router();
-    const { getAuth, getDb, createPaperTrading, startingMicroUsd, secureCookies, clock, rateLimits } = options;
+    const { getAuth, getDb, getAccountLifecycle, createPaperTrading, startingMicroUsd, secureCookies, emailVerificationRequired, clock, rateLimits, } = options;
     const setLimitHeaders = (res, result) => {
         res.setHeader("RateLimit-Limit", String(result.limit));
         res.setHeader("RateLimit-Remaining", String(result.remaining));
@@ -150,6 +150,16 @@ export function createAuthRouter(options) {
     };
     const currentUser = (res) => res.locals.user;
     const paperTrading = () => createPaperTrading(getDb());
+    const requireVerified = (_req, res, next) => {
+        if (emailVerificationRequired && !currentUser(res).emailVerified) {
+            res.status(403).json({
+                error: "EMAIL_VERIFICATION_REQUIRED",
+                message: "Verify your email before changing your paper portfolio or watchlist.",
+            });
+            return;
+        }
+        next();
+    };
     // ---- Identity ----
     router.post("/v1/auth/signup", requirePersistence, async (req, res) => {
         try {
@@ -163,8 +173,27 @@ export function createAuthRouter(options) {
             // Fund the portfolio immediately so the account is never half-created.
             await new PortfolioRepository(getDb()).ensureDefault(session.user.id, startingMicroUsd);
             setSessionCookie(res, session.token, session.expiresAtMs, secureCookies);
+            let verificationEmailSent = false;
+            if (emailVerificationRequired && !session.user.emailVerified) {
+                try {
+                    verificationEmailSent = (await getAccountLifecycle()?.sendVerification(session.user.id))?.sent ?? false;
+                }
+                catch (emailError) {
+                    // The account and portfolio are valid. Preserve them and let the
+                    // signed-in user retry delivery instead of turning this into a
+                    // duplicate-account trap on their next sign-up attempt.
+                    console.error(JSON.stringify({
+                        msg: "verification email delivery failed",
+                        error: emailError instanceof Error ? emailError.message : "unknown error",
+                    }));
+                }
+            }
             console.log(JSON.stringify({ msg: "account created", userId: session.user.id }));
-            res.status(201).json({ user: { id: session.user.id, email: session.user.email } });
+            res.status(201).json({
+                user: session.user,
+                verificationRequired: emailVerificationRequired && !session.user.emailVerified,
+                verificationEmailSent,
+            });
         }
         catch (err) {
             fail(res, err);
@@ -180,7 +209,7 @@ export function createAuthRouter(options) {
             await consumeLimit(res, "auth:credentials", parsed.data.email, rateLimits.authAttempts, rateLimits.authWindowMs);
             const session = await getAuth().signIn(parsed.data.email, parsed.data.password);
             setSessionCookie(res, session.token, session.expiresAtMs, secureCookies);
-            res.json({ user: { id: session.user.id, email: session.user.email } });
+            res.json({ user: session.user });
         }
         catch (err) {
             // Log the failure without the credentials that caused it.
@@ -220,8 +249,93 @@ export function createAuthRouter(options) {
         res.json({
             authenticated: user !== null,
             accountsEnabled: true,
-            user: user ? { id: user.id, email: user.email } : null,
+            emailVerificationRequired,
+            emailDeliveryConfigured: getAccountLifecycle()?.deliveryConfigured ?? false,
+            user,
         });
+    });
+    const emailSchema = z.object({ email: z.string().email().max(254) });
+    const actionTokenSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
+    router.post("/v1/auth/forgot-password", requirePersistence, async (req, res) => {
+        const startedAt = Date.now();
+        try {
+            const parsed = emailSchema.safeParse(req.body);
+            if (parsed.success) {
+                await consumeLimit(res, "auth:network", req.ip ?? req.socket.remoteAddress ?? "unresolved-network", rateLimits.authNetworkAttempts, rateLimits.authWindowMs);
+                await consumeLimit(res, "auth:recovery", parsed.data.email, rateLimits.authAttempts, rateLimits.authWindowMs);
+                try {
+                    await getAccountLifecycle()?.requestPasswordReset(parsed.data.email);
+                }
+                catch (emailError) {
+                    // Deliberately indistinguishable from an unknown email address.
+                    console.error(JSON.stringify({
+                        msg: "password reset delivery failed",
+                        error: emailError instanceof Error ? emailError.message : "unknown error",
+                    }));
+                }
+            }
+            // Bound the most obvious account-enumeration timing difference between
+            // a database miss and an outbound provider call. Rate limits provide the
+            // primary abuse control; this makes the response shape less distinguishable.
+            const remainingDelayMs = 350 - (Date.now() - startedAt);
+            if (remainingDelayMs > 0)
+                await new Promise((resolve) => setTimeout(resolve, remainingDelayMs));
+            const deliveryConfigured = getAccountLifecycle()?.deliveryConfigured ?? false;
+            res.status(202).json({
+                ok: true,
+                deliveryConfigured,
+                message: deliveryConfigured
+                    ? "If that account exists, a password-reset email will arrive shortly."
+                    : "Password-recovery email is not configured on this deployment yet.",
+            });
+        }
+        catch (err) {
+            fail(res, err);
+        }
+    });
+    router.post("/v1/auth/verify-email", requirePersistence, async (req, res) => {
+        try {
+            const parsed = z.object({ token: actionTokenSchema }).safeParse(req.body);
+            if (!parsed.success || !getAccountLifecycle()) {
+                throw new ArbError("VALIDATION_ERROR", "This verification link is invalid or expired.", 400);
+            }
+            const user = await getAccountLifecycle().verifyEmail(parsed.data.token);
+            res.json({ ok: true, user: { id: user.id, email: user.email, emailVerified: true } });
+        }
+        catch (err) {
+            fail(res, err);
+        }
+    });
+    router.post("/v1/auth/resend-verification", requireAuth, async (_req, res) => {
+        try {
+            await consumeLimit(res, "auth:verification", currentUser(res).id, rateLimits.authAttempts, rateLimits.authWindowMs);
+            const delivery = await getAccountLifecycle()?.sendVerification(currentUser(res).id);
+            if (!delivery || delivery.reason === "delivery_unconfigured") {
+                throw new ArbError("INTERNAL_ERROR", "Verification email is temporarily unavailable.", 503);
+            }
+            res.json({ ok: true, sent: delivery.sent, alreadyVerified: delivery.reason === "already_verified" });
+        }
+        catch (err) {
+            fail(res, err);
+        }
+    });
+    router.post("/v1/auth/reset-password", requirePersistence, async (req, res) => {
+        try {
+            const parsed = z
+                .object({ token: actionTokenSchema, password: z.string().min(10).max(200) })
+                .safeParse(req.body);
+            if (!parsed.success || !getAccountLifecycle()) {
+                throw new ArbError("VALIDATION_ERROR", "This password-reset link is invalid or expired.", 400);
+            }
+            await consumeLimit(res, "auth:network", req.ip ?? req.socket.remoteAddress ?? "unresolved-network", rateLimits.authNetworkAttempts, rateLimits.authWindowMs);
+            await consumeLimit(res, "auth:reset", parsed.data.token, rateLimits.authAttempts, rateLimits.authWindowMs);
+            await getAccountLifecycle().resetPassword(parsed.data.token, parsed.data.password);
+            clearSessionCookie(res, secureCookies);
+            res.json({ ok: true, message: "Password updated. Sign in again on every device." });
+        }
+        catch (err) {
+            fail(res, err);
+        }
     });
     // ---- Per-user state ----
     router.get("/v1/me/portfolio", requireAuth, async (_req, res) => {
@@ -239,7 +353,7 @@ export function createAuthRouter(options) {
         amountUsd: z.union([z.string().min(1).max(32), z.number().finite()]).transform(String),
         slippageBps: z.coerce.number().int().min(1).max(5_000).default(50),
     });
-    router.post("/v1/me/paper/positions", requireAuth, async (req, res) => {
+    router.post("/v1/me/paper/positions", requireAuth, requireVerified, async (req, res) => {
         try {
             const parsed = paperEntrySchema.safeParse(req.body);
             if (!parsed.success) {
@@ -256,7 +370,7 @@ export function createAuthRouter(options) {
     const paperCloseSchema = z.object({
         slippageBps: z.coerce.number().int().min(1).max(5_000).default(50),
     });
-    router.post("/v1/me/paper/positions/:id/close", requireAuth, async (req, res) => {
+    router.post("/v1/me/paper/positions/:id/close", requireAuth, requireVerified, async (req, res) => {
         try {
             const parsed = paperCloseSchema.safeParse(req.body ?? {});
             if (!parsed.success)
@@ -284,7 +398,7 @@ export function createAuthRouter(options) {
         }
     });
     const mintSchema = z.object({ tokenMint: z.string().min(32).max(64) });
-    router.post("/v1/me/watchlist", requireAuth, async (req, res) => {
+    router.post("/v1/me/watchlist", requireAuth, requireVerified, async (req, res) => {
         try {
             const parsed = mintSchema.safeParse(req.body);
             if (!parsed.success) {
@@ -297,7 +411,7 @@ export function createAuthRouter(options) {
             fail(res, err);
         }
     });
-    router.delete("/v1/me/watchlist/:mint", requireAuth, async (req, res) => {
+    router.delete("/v1/me/watchlist/:mint", requireAuth, requireVerified, async (req, res) => {
         try {
             const removed = await new WatchlistRepository(getDb()).remove(currentUser(res).id, req.params.mint);
             res.json({ ok: true, removed });

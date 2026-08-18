@@ -3,6 +3,8 @@ import { z } from "zod";
  * Environment validation — fail fast with a readable message instead of
  * surprising behavior later. No secrets are required to run demo mode.
  */
+const emptyToUndefined = (value) => typeof value === "string" && value.trim() === "" ? undefined : value;
+const optionalNonempty = z.preprocess(emptyToUndefined, z.string().min(1).optional());
 const envSchema = z.object({
     PORT: z.coerce.number().int().min(1).max(65535).default(8787),
     /**
@@ -10,7 +12,7 @@ const envSchema = z.object({
      * live — hybrid: on-chain mint facts from Solana RPC, everything else still
      *        simulated and labelled per field.
      */
-    MARKET_MODE: z.enum(["demo", "live"]).default("demo"),
+    MARKET_MODE: z.preprocess(emptyToUndefined, z.enum(["demo", "live"]).default("demo")),
     /** Solana JSON-RPC endpoint used in live mode. Read-only; no key required. */
     SOLANA_RPC_URL: z.string().url().default("https://api.mainnet-beta.solana.com"),
     /** How long a mint account stays cached. Mint data changes almost never. */
@@ -20,7 +22,7 @@ const envSchema = z.object({
     /** Read-only swap quotes. Only /quote is ever called, never /swap. */
     JUPITER_QUOTE_URL: z.string().url().default("https://lite-api.jup.ag/swap/v1"),
     /** Optional production Developer Platform credential. Never exposed to the client. */
-    JUPITER_API_KEY: z.string().min(1).optional(),
+    JUPITER_API_KEY: optionalNonempty,
     /** Server-side production gate: minimum reported market liquidity. */
     TRADABILITY_MIN_LIQUIDITY_USD: z.coerce.number().int().min(0).max(1_000_000_000).default(10_000),
     /** Maximum permitted impact for the requested one-way quote. */
@@ -32,7 +34,7 @@ const envSchema = z.object({
     /** Virtual starting balance for the paper portfolio, in SOL. */
     PAPER_STARTING_SOL: z.coerce.number().positive().max(100_000).default(100),
     /** Optional: enables the legacy admin allowlist endpoints when set. */
-    ADMIN_TOKEN: z.string().min(16).optional(),
+    ADMIN_TOKEN: z.preprocess(emptyToUndefined, z.string().min(16).optional()),
     /** Directory for local JSON state (legacy simulator + settings). */
     DATA_DIR: z.string().default("data"),
     /**
@@ -40,7 +42,7 @@ const envSchema = z.object({
      * accounts, portfolios and watchlists are disabled — public research and
      * quotes keep working.
      */
-    DATABASE_URL: z.string().min(1).optional(),
+    DATABASE_URL: optionalNonempty,
     /** Starting paper capital for a new account, in whole USD. */
     PAPER_STARTING_USD: z.coerce.number().positive().max(100_000_000).default(100_000),
     /** Smallest live-quote paper entry accepted by the server. */
@@ -61,6 +63,17 @@ const envSchema = z.object({
     PAPER_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().min(1_000).max(3_600_000).default(60_000),
     /** How long a signed-in session lasts. */
     SESSION_TTL_DAYS: z.coerce.number().int().min(1).max(365).default(30),
+    /** Public, canonical origin used in emailed links. Never inferred from Host. */
+    PUBLIC_APP_URL: z.string().url().default("https://mooncoin-two.vercel.app"),
+    /** Enable verification gates only after production email delivery is ready. */
+    EMAIL_VERIFICATION_REQUIRED: z
+        .enum(["true", "false"])
+        .default("false")
+        .transform((v) => v === "true"),
+    /** Resend credentials are optional; password recovery degrades safely without them. */
+    RESEND_API_KEY: optionalNonempty,
+    /** Example: Moonpaper <accounts@example.com>. Must be a verified sender in Resend. */
+    ACCOUNT_EMAIL_FROM: z.preprocess(emptyToUndefined, z.string().min(3).max(320).optional()),
     /**
      * Send Secure cookies. Must be true in production (HTTPS); false for plain
      * HTTP local development, where the browser would otherwise drop the cookie.
@@ -69,6 +82,22 @@ const envSchema = z.object({
         .enum(["true", "false"])
         .default("true")
         .transform((v) => v === "true"),
+}).superRefine((env, ctx) => {
+    const deliveryComplete = Boolean(env.RESEND_API_KEY && env.ACCOUNT_EMAIL_FROM);
+    if (Boolean(env.RESEND_API_KEY) !== Boolean(env.ACCOUNT_EMAIL_FROM)) {
+        ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [env.RESEND_API_KEY ? "ACCOUNT_EMAIL_FROM" : "RESEND_API_KEY"],
+            message: "RESEND_API_KEY and ACCOUNT_EMAIL_FROM must be configured together",
+        });
+    }
+    if (env.EMAIL_VERIFICATION_REQUIRED && !deliveryComplete) {
+        ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["EMAIL_VERIFICATION_REQUIRED"],
+            message: "cannot be true until Resend delivery is configured",
+        });
+    }
 });
 export function loadEnv(source = process.env) {
     const result = envSchema.safeParse(source);

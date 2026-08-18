@@ -25,6 +25,7 @@ import { createLegacyArbitrageRouter } from "./legacyArbitrage.js";
 import { seedDemoState } from "./demoSeed.js";
 import { createAuthRouter } from "./authRoutes.js";
 import { PasswordAuthProvider } from "../auth/authService.js";
+import { AccountLifecycleService, ResendEmailSender } from "../auth/accountLifecycle.js";
 // NOTE: the Postgres driver is NOT imported here. A static top-level import
 // makes the whole application unloadable if the driver is missing from the
 // deployed bundle — which is exactly the outage this comment exists to
@@ -115,6 +116,15 @@ export async function initPersistence(deps) {
         deps.auth = new PasswordAuthProvider(db, {
             clock: deps.clock,
             sessionTtlMs: deps.env.SESSION_TTL_DAYS * 86_400_000,
+            emailVerificationRequired: deps.env.EMAIL_VERIFICATION_REQUIRED,
+        });
+        const sender = deps.env.RESEND_API_KEY && deps.env.ACCOUNT_EMAIL_FROM
+            ? new ResendEmailSender({ apiKey: deps.env.RESEND_API_KEY, from: deps.env.ACCOUNT_EMAIL_FROM })
+            : undefined;
+        deps.accountLifecycle = new AccountLifecycleService(db, {
+            ...(sender ? { sender } : {}),
+            appBaseUrl: deps.env.PUBLIC_APP_URL,
+            clock: deps.clock,
         });
     }
     catch (err) {
@@ -740,6 +750,12 @@ export function createApp(deps) {
             // "ok" only when we proved migrations ran; unknown when we cannot reach it.
             migrations: persistence.status === "ok" ? "ok" : persistence.status === "schema_missing" ? "missing" : "unknown",
             accountsEnabled,
+            accountLifecycle: {
+                available: accountsEnabled && Boolean(deps.accountLifecycle),
+                emailDeliveryConfigured: deps.accountLifecycle?.deliveryConfigured ?? false,
+                verificationRequired: deps.env.EMAIL_VERIFICATION_REQUIRED,
+                provider: deps.accountLifecycle?.deliveryKind ?? null,
+            },
             safeguards: {
                 securityHeaders: true,
                 sameOriginWrites: true,
@@ -1255,6 +1271,7 @@ export function createApp(deps) {
     app.use(createAuthRouter({
         getAuth: () => deps.auth,
         getDb: () => deps.db,
+        getAccountLifecycle: () => deps.accountLifecycle,
         createPaperTrading: (db) => new LivePaperTradingService(db, tradability, deps.quotes, {
             startingMicroUsd: usdToMicroUsd(deps.env.PAPER_STARTING_USD),
             minTradeMicroUsd: usdToMicroUsd(deps.env.PAPER_MIN_TRADE_USD),
@@ -1272,6 +1289,7 @@ export function createApp(deps) {
             paperWindowMs: deps.env.PAPER_RATE_LIMIT_WINDOW_MS,
         },
         secureCookies: deps.env.COOKIE_SECURE,
+        emailVerificationRequired: deps.env.EMAIL_VERIFICATION_REQUIRED,
     }));
     // ---- Legacy arbitrage calculator (original add-on, kept working) ----
     app.use(createLegacyArbitrageRouter(deps.env.QUOTE_MODE === "mock", deps.env.ADMIN_TOKEN));
