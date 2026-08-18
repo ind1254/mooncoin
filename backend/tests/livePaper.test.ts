@@ -178,13 +178,22 @@ async function call(method: string, path: string, body?: unknown, cookie?: strin
 const signUp = (email: string) =>
   call("POST", "/v1/auth/signup", { email, password: "correct horse battery" });
 
+let requestSequence = 0;
+const entryBody = (overrides: Record<string, unknown> = {}) => ({
+  clientRequestId: `00000000-0000-4000-8000-${String(++requestSequence).padStart(12, "0")}`,
+  tokenMint: MINT,
+  amountUsd: "100",
+  slippageBps: 50,
+  ...overrides,
+});
+
 describe("live-quote paper trading", () => {
   it("opens at Jupiter's conservative minimum output and persists exact units", async () => {
     const account = await signUp("entry@example.com");
     const opened = await call(
       "POST",
       "/v1/me/paper/positions",
-      { tokenMint: MINT, amountUsd: "100", slippageBps: 50 },
+      entryBody(),
       account.cookie,
     );
 
@@ -214,7 +223,7 @@ describe("live-quote paper trading", () => {
     const opened = await call(
       "POST",
       "/v1/me/paper/positions",
-      { tokenMint: MINT, amountUsd: "100", slippageBps: 50 },
+      entryBody(),
       account.cookie,
     );
 
@@ -232,7 +241,7 @@ describe("live-quote paper trading", () => {
     const opened = await call(
       "POST",
       "/v1/me/paper/positions",
-      { tokenMint: MINT, amountUsd: "100", slippageBps: 50 },
+      entryBody(),
       account.cookie,
     );
     const id = opened.body.position.id as string;
@@ -258,11 +267,7 @@ describe("live-quote paper trading", () => {
   it("derives ownership from the session and hides another user's position", async () => {
     expect(
       (
-        await call("POST", "/v1/me/paper/positions", {
-          tokenMint: MINT,
-          amountUsd: "100",
-          slippageBps: 50,
-        })
+        await call("POST", "/v1/me/paper/positions", entryBody())
       ).status,
     ).toBe(401);
 
@@ -271,7 +276,7 @@ describe("live-quote paper trading", () => {
     const opened = await call(
       "POST",
       "/v1/me/paper/positions",
-      { tokenMint: MINT, amountUsd: "100", slippageBps: 50 },
+      entryBody(),
       alice.cookie,
     );
     const result = await call(
@@ -290,7 +295,7 @@ describe("live-quote paper trading", () => {
     await call(
       "POST",
       "/v1/me/paper/positions",
-      { tokenMint: MINT, amountUsd: "100", slippageBps: 50 },
+      entryBody(),
       account.cookie,
     );
     sellUnavailable = true;
@@ -308,7 +313,7 @@ describe("live-quote paper trading", () => {
     const tooLarge = await call(
       "POST",
       "/v1/me/paper/positions",
-      { tokenMint: MINT, amountUsd: "10000.01", slippageBps: 50 },
+      entryBody({ amountUsd: "10000.01" }),
       account.cookie,
     );
     expect(tooLarge.status).toBe(400);
@@ -318,11 +323,46 @@ describe("live-quote paper trading", () => {
     const insufficient = await call(
       "POST",
       "/v1/me/paper/positions",
-      { tokenMint: MINT, amountUsd: "100", slippageBps: 50 },
+      entryBody(),
       account.cookie,
     );
     expect(insufficient.status).toBe(409);
     expect(insufficient.body.error).toBe("INSUFFICIENT_PAPER_BALANCE");
     expect((await db.query("select id from paper_positions"))).toHaveLength(0);
+  });
+
+  it("replays one client request id without debiting paper cash twice", async () => {
+    const account = await signUp("retry-safe@example.com");
+    const body = entryBody();
+
+    const first = await call("POST", "/v1/me/paper/positions", body, account.cookie);
+    // A genuine retry must return the committed result even if the market is
+    // no longer eligible by the time the client notices its response was lost.
+    liquidityMicro = 1n;
+    const replay = await call("POST", "/v1/me/paper/positions", body, account.cookie);
+
+    expect(first.status).toBe(201);
+    expect(replay.status).toBe(201);
+    expect(replay.body.position.id).toBe(first.body.position.id);
+    expect((await db.query("select id from paper_positions"))).toHaveLength(1);
+    expect((await call("GET", "/v1/me/portfolio", undefined, account.cookie)).body.portfolio.cashUsd).toBe(
+      "99900.00",
+    );
+  });
+
+  it("rejects reusing a client request id for a different entry", async () => {
+    const account = await signUp("retry-conflict@example.com");
+    const clientRequestId = entryBody().clientRequestId;
+    await call("POST", "/v1/me/paper/positions", entryBody({ clientRequestId }), account.cookie);
+
+    const conflict = await call(
+      "POST",
+      "/v1/me/paper/positions",
+      entryBody({ clientRequestId, amountUsd: "200" }),
+      account.cookie,
+    );
+    expect(conflict.status).toBe(409);
+    expect(conflict.body.error).toBe("VALIDATION_ERROR");
+    expect((await db.query("select id from paper_positions"))).toHaveLength(1);
   });
 });

@@ -291,8 +291,8 @@ export class ResearchService {
             simulation: {
                 available: simAvailable,
                 reason: simAvailable
-                    ? "Executable quotes are available for this token."
-                    : "Paper trading needs an executable quote, and no live quote provider is wired up for arbitrary tokens yet.",
+                    ? "This mint is available in the deterministic simulator."
+                    : "This mint is not in the legacy simulator. Run the production eligibility check to use authenticated live-quote paper trading.",
             },
             fetchedAtMs: requestedAtMs,
         };

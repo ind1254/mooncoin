@@ -25,6 +25,8 @@ export type ErrorCode =
   // Identity and access
   | "UNAUTHORIZED"
   | "FORBIDDEN"
+  | "ORIGIN_NOT_ALLOWED"
+  | "RATE_LIMITED"
   | "DATABASE_ERROR";
 
 export class ArbError extends Error {

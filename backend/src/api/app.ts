@@ -749,11 +749,39 @@ export function createApp(deps: AppDeps): Express {
   };
   const tradability = new TradabilityService(deps.research, deps.quotes, tradabilityPolicy, deps.clock);
   app.disable("x-powered-by");
+  // Vercel is the single front proxy. This makes req.ip the caller address for
+  // the durable network-level authentication budget.
+  app.set("trust proxy", 1);
   app.use(express.json({ limit: "32kb" }));
+
+  // Browser and embedding policy. The SPA intentionally uses small inline
+  // style attributes, but scripts and API connections remain same-origin.
+  app.use((req, res, next) => {
+    res.setHeader(
+      "Content-Security-Policy",
+      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https: data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
+    );
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("X-Frame-Options", "DENY");
+    res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+    res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()");
+    res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+    res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+    if (deps.env.COOKIE_SECURE) {
+      res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+    }
+    if (req.path.startsWith("/v1/auth") || req.path.startsWith("/v1/me")) {
+      res.setHeader("Cache-Control", "no-store");
+    }
+    next();
+  });
 
   // Correlation IDs + structured request logging; never logs request bodies
   app.use((req, res, next) => {
-    const correlationId = (req.headers["x-correlation-id"] as string) || randomUUID();
+    const suppliedCorrelationId = req.headers["x-correlation-id"];
+    const candidate = Array.isArray(suppliedCorrelationId) ? suppliedCorrelationId[0] : suppliedCorrelationId;
+    const correlationId =
+      typeof candidate === "string" && /^[A-Za-z0-9._-]{1,64}$/.test(candidate) ? candidate : randomUUID();
     res.locals.correlationId = correlationId;
     res.setHeader("x-correlation-id", correlationId);
     const startedAt = Date.now();
@@ -769,6 +797,34 @@ export function createApp(deps: AppDeps): Express {
         }),
       );
     });
+    next();
+  });
+
+  // Cookie-authenticated writes must originate from this host. Native clients
+  // and server-to-server callers normally omit Origin and remain supported.
+  app.use((req, res, next) => {
+    if (!new Set(["POST", "PUT", "PATCH", "DELETE"]).has(req.method) || !req.headers.origin) {
+      next();
+      return;
+    }
+    // Host is the browser-selected authority. Do not trust X-Forwarded-Host:
+    // deployments without a sanitizing proxy could let a caller spoof it.
+    const expectedHost = req.headers.host?.trim().toLowerCase();
+    let originHost: string | null = null;
+    try {
+      originHost = new URL(req.headers.origin).host.toLowerCase();
+    } catch {
+      // Malformed origins are never trusted.
+    }
+    if (!expectedHost || originHost !== expectedHost) {
+      res.status(403).json({
+        correlationId: res.locals.correlationId,
+        error: "ORIGIN_NOT_ALLOWED",
+        message: "This write request did not come from Moonpaper.",
+        executionEnabled: false,
+      });
+      return;
+    }
     next();
   });
 
@@ -816,12 +872,19 @@ export function createApp(deps: AppDeps): Express {
   app.get("/health", async (_req, res) => {
     const persistence = await checkPersistence(deps);
     const degraded = persistence.status !== "ok" && persistence.status !== "unconfigured";
+    const accountsEnabled = Boolean(deps.db && deps.auth) && persistence.status === "ok";
     res.status(200).json({
       app: "ok",
       database: persistence.status,
       // "ok" only when we proved migrations ran; unknown when we cannot reach it.
       migrations: persistence.status === "ok" ? "ok" : persistence.status === "schema_missing" ? "missing" : "unknown",
-      accountsEnabled: Boolean(deps.db && deps.auth) && persistence.status === "ok",
+      accountsEnabled,
+      safeguards: {
+        securityHeaders: true,
+        sameOriginWrites: true,
+        durableRateLimits: accountsEnabled,
+        retrySafePaperEntries: accountsEnabled,
+      },
       degraded,
       ...(persistence.detail ? { detail: persistence.detail } : {}),
       ...meta(deps),
@@ -1388,6 +1451,14 @@ export function createApp(deps: AppDeps): Express {
           deps.clock,
         ),
       startingMicroUsd: usdToMicroUsd(deps.env.PAPER_STARTING_USD),
+      clock: deps.clock,
+      rateLimits: {
+        authAttempts: deps.env.AUTH_RATE_LIMIT_ATTEMPTS,
+        authWindowMs: deps.env.AUTH_RATE_LIMIT_WINDOW_MS,
+        authNetworkAttempts: deps.env.AUTH_RATE_LIMIT_NETWORK_ATTEMPTS,
+        paperAttempts: deps.env.PAPER_RATE_LIMIT_ATTEMPTS,
+        paperWindowMs: deps.env.PAPER_RATE_LIMIT_WINDOW_MS,
+      },
       secureCookies: deps.env.COOKIE_SECURE,
     }),
   );

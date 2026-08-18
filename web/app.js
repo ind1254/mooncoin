@@ -315,6 +315,9 @@
     if (!livePaperReportIsUsable(report)) {
       return toast("Run a fresh eligible production check before reviewing this paper entry.", "error");
     }
+    // Reused by every retry from this modal. The server binds it to the first
+    // recorded position, so a lost response can never spend paper cash twice.
+    const clientRequestId = crypto.randomUUID();
     const route = report.quote.route.map((hop) => hop.venue).join(" → ");
     showModal(`
       <h3>Review live-quote paper entry — ${esc(token.symbol)}</h3>
@@ -341,6 +344,7 @@
       error.classList.add("hidden");
       try {
         const body = await post("/v1/me/paper/positions", {
+          clientRequestId,
           tokenMint: token.mint,
           amountUsd,
           slippageBps: 50,

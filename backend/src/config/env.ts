@@ -51,6 +51,16 @@ const envSchema = z.object({
   PAPER_MAX_TRADE_USD: z.coerce.number().int().min(1).max(100_000_000).default(10_000),
   /** Bound quote fan-out and accidental position spam per account. */
   PAPER_MAX_OPEN_POSITIONS: z.coerce.number().int().min(1).max(100).default(25),
+  /** Durable per-email authentication attempt budget. */
+  AUTH_RATE_LIMIT_ATTEMPTS: z.coerce.number().int().min(1).max(1_000).default(10),
+  /** Fixed authentication rate-limit window. */
+  AUTH_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().min(1_000).max(86_400_000).default(900_000),
+  /** Broader per-network authentication budget to bound identifier spraying. */
+  AUTH_RATE_LIMIT_NETWORK_ATTEMPTS: z.coerce.number().int().min(1).max(100_000).default(60),
+  /** Durable per-account paper-write budget. */
+  PAPER_RATE_LIMIT_ATTEMPTS: z.coerce.number().int().min(1).max(10_000).default(30),
+  /** Fixed paper-write rate-limit window. */
+  PAPER_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().min(1_000).max(3_600_000).default(60_000),
   /** How long a signed-in session lasts. */
   SESSION_TTL_DAYS: z.coerce.number().int().min(1).max(365).default(30),
   /**

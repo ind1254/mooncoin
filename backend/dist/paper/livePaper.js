@@ -131,8 +131,17 @@ export class LivePaperTradingService {
         }
         return amount;
     }
-    async openPosition(userId, tokenMint, amountUsd, slippageBps) {
+    async openPosition(userId, tokenMint, amountUsd, slippageBps, clientRequestId) {
         const amountMicroUsd = this.parseEntryAmount(amountUsd);
+        const replay = await this.positions.findByClientRequestId(userId, clientRequestId);
+        if (replay) {
+            if (replay.tokenMint !== tokenMint ||
+                replay.entryCostMicroUsd !== amountMicroUsd ||
+                replay.entrySlippageBps !== slippageBps) {
+                throw new ArbError("VALIDATION_ERROR", "That paper request id was already used for a different entry.", 409);
+            }
+            return paperPositionView(replay);
+        }
         const check = await this.tradability.check(tokenMint, amountUsd, slippageBps);
         if (!check.eligible || !check.quote) {
             throw new ArbError("PAPER_TRADE_INELIGIBLE", "This token did not pass every required production gate for that paper entry.", 409, { verdict: check.verdict, blockingGateIds: check.blockingGateIds });
@@ -144,6 +153,7 @@ export class LivePaperTradingService {
             throw new ArbError("PRICE_IMPACT_TOO_HIGH", "Price impact exceeds the paper-entry policy.", 409);
         }
         const record = await this.positions.open(userId, this.config.startingMicroUsd, this.config.maxOpenPositions, {
+            clientRequestId,
             tokenMint: check.mint,
             tokenSymbol: check.symbol,
             tokenName: check.name,

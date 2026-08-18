@@ -191,8 +191,24 @@ export class LivePaperTradingService {
     tokenMint: string,
     amountUsd: string,
     slippageBps: bigint,
+    clientRequestId: string,
   ): Promise<Record<string, unknown>> {
     const amountMicroUsd = this.parseEntryAmount(amountUsd);
+    const replay = await this.positions.findByClientRequestId(userId, clientRequestId);
+    if (replay) {
+      if (
+        replay.tokenMint !== tokenMint ||
+        replay.entryCostMicroUsd !== amountMicroUsd ||
+        replay.entrySlippageBps !== slippageBps
+      ) {
+        throw new ArbError(
+          "VALIDATION_ERROR",
+          "That paper request id was already used for a different entry.",
+          409,
+        );
+      }
+      return paperPositionView(replay);
+    }
     const check = await this.tradability.check(tokenMint, amountUsd, slippageBps);
     if (!check.eligible || !check.quote) {
       throw new ArbError(
@@ -214,6 +230,7 @@ export class LivePaperTradingService {
       this.config.startingMicroUsd,
       this.config.maxOpenPositions,
       {
+        clientRequestId,
         tokenMint: check.mint,
         tokenSymbol: check.symbol,
         tokenName: check.name,

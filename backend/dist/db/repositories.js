@@ -58,7 +58,50 @@ function toLivePaperPosition(row) {
         exitQuoteRetrievedAtMs: readNullableDateMs(row.exit_quote_retrieved_at),
         exitQuoteExpiresAtMs: readNullableDateMs(row.exit_quote_expires_at),
         closedAtMs: readNullableDateMs(row.closed_at),
+        clientRequestId: readNullableString(row.client_request_id),
     };
+}
+/** Opaque database identity: raw emails and user ids never enter limit rows. */
+export function hashRateLimitSubject(subject) {
+    return createHash("sha256").update(subject.trim().toLowerCase()).digest("hex");
+}
+/**
+ * Postgres-backed fixed-window limiter shared by every serverless instance.
+ * The upsert is atomic, so concurrent requests cannot each observe a stale
+ * count and slip through together.
+ */
+export class RateLimitRepository {
+    db;
+    constructor(db) {
+        this.db = db;
+    }
+    async consume(scope, subject, limit, windowMs, nowMs) {
+        const subjectHash = hashRateLimitSubject(subject);
+        const windowStartedAtMs = Math.floor(nowMs / windowMs) * windowMs;
+        const resetAtMs = windowStartedAtMs + windowMs;
+        return this.db.transaction(async (tx) => {
+            // The expiry index makes this cheap and also bounds rows created by an
+            // identifier-spraying attacker, not only repeat callers.
+            await tx.query(`delete from rate_limit_buckets
+          where expires_at <= to_timestamp($1::double precision / 1000)`, [nowMs]);
+            const rows = await tx.query(`insert into rate_limit_buckets (
+           scope, subject_hash, window_started_at, request_count, expires_at
+         ) values (
+           $1, $2, to_timestamp($3::double precision / 1000), 1,
+           to_timestamp($4::double precision / 1000)
+         )
+         on conflict (scope, subject_hash, window_started_at)
+         do update set request_count = rate_limit_buckets.request_count + 1,
+                       expires_at = excluded.expires_at
+         returning request_count`, [scope, subjectHash, windowStartedAtMs, resetAtMs]);
+            const count = readInteger(rows[0].request_count);
+            if (count > limit) {
+                const retryAfterSeconds = Math.max(1, Math.ceil((resetAtMs - nowMs) / 1_000));
+                throw new ArbError("RATE_LIMITED", `Too many requests. Try again in ${retryAfterSeconds} seconds.`, 429, { retryAfterSeconds, limit, resetAtMs });
+            }
+            return { limit, remaining: limit - count, resetAtMs };
+        });
+    }
 }
 function toUser(row) {
     return {
@@ -182,6 +225,13 @@ export class LivePaperPositionRepository {
     constructor(db) {
         this.db = db;
     }
+    async findByClientRequestId(userId, clientRequestId) {
+        const rows = await this.db.query(`select pp.*
+         from paper_positions pp
+         join portfolios p on p.id = pp.portfolio_id
+        where pp.client_request_id = $1 and p.user_id = $2`, [clientRequestId, userId]);
+        return rows[0] ? toLivePaperPosition(rows[0]) : null;
+    }
     async findOwned(userId, positionId) {
         const rows = await this.db.query(`select pp.*
          from paper_positions pp
@@ -201,6 +251,16 @@ export class LivePaperPositionRepository {
         return this.db.transaction(async (tx) => {
             const portfolio = await new PortfolioRepository(tx).ensureDefault(userId, startingMicroUsd);
             await tx.query("select id from portfolios where id = $1 and user_id = $2 for update", [portfolio.id, userId]);
+            const replay = await tx.query("select * from paper_positions where portfolio_id = $1 and client_request_id = $2", [portfolio.id, input.clientRequestId]);
+            if (replay[0]) {
+                const existing = toLivePaperPosition(replay[0]);
+                if (existing.tokenMint !== input.tokenMint ||
+                    existing.entryCostMicroUsd !== input.entryCostMicroUsd ||
+                    existing.entrySlippageBps !== input.entrySlippageBps) {
+                    throw new ArbError("VALIDATION_ERROR", "That paper request id was already used for a different entry.", 409);
+                }
+                return existing;
+            }
             const counts = await tx.query("select count(*)::text as count from paper_positions where portfolio_id = $1 and status = 'open'", [portfolio.id]);
             if (Number(counts[0]?.count ?? "0") >= maxOpenPositions) {
                 throw new ArbError("POSITION_LIMIT_REACHED", `Close an existing paper position before opening more than ${maxOpenPositions}.`, 409);
@@ -217,12 +277,13 @@ export class LivePaperPositionRepository {
            portfolio_id, token_mint, token_symbol, token_name, token_decimals, status,
            token_quantity_base_units, entry_cost_micro_usd, entry_slippage_bps,
            entry_price_impact_bps, entry_route, entry_quote_source,
-           entry_quote_retrieved_at, entry_quote_expires_at, opened_at
+           entry_quote_retrieved_at, entry_quote_expires_at, opened_at,
+           client_request_id
          ) values (
            $1, $2, $3, $4, $5, 'open', $6, $7, $8, $9, $10::jsonb, $11,
            to_timestamp($12::double precision / 1000),
            to_timestamp($13::double precision / 1000),
-           to_timestamp($14::double precision / 1000)
+           to_timestamp($14::double precision / 1000), $15
          ) returning *`, [
                 portfolio.id,
                 input.tokenMint,
@@ -238,6 +299,7 @@ export class LivePaperPositionRepository {
                 input.entryQuoteRetrievedAtMs,
                 input.entryQuoteExpiresAtMs,
                 input.openedAtMs,
+                input.clientRequestId,
             ]);
             return toLivePaperPosition(rows[0]);
         });

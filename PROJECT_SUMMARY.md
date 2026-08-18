@@ -79,7 +79,7 @@ fired ("BONK now matches your balanced strategy: liquidity increased, ...").
   the overall score (a pumping rug-pull candidate can never rank "strong").
 - **Token identity by mint address only** — symbols are display-only, which
   kills the classic duplicate-ticker attack on token lists.
-- **Testing:** 224 automated tests: live-feed normalization, production
+- **Testing:** 231 automated tests: live-feed normalization, production
   tradability gates, provider degradation,
   money-math boundaries, scoring evidence,
   paper-engine invariants (balance bookkeeping is exact to the lamport), and
@@ -92,6 +92,10 @@ fired ("BONK now matches your balanced strategy: liquidity increased, ...").
   debit/credit cash and mutate positions in one database transaction, enforce
   ownership, and prevent double closes. Exact NUMERIC/BigInt values cross the
   provider, service, and persistence boundaries without float arithmetic.
+- **Production abuse/retry safety:** Postgres-backed fixed-window limits apply
+  across serverless instances without storing raw identifiers. UUID request
+  keys make paper-entry retries idempotent under the same portfolio lock.
+  Same-origin checks and restrictive browser headers protect cookie sessions.
 
 ## Honest caveats (do NOT overstate these on the resume)
 
@@ -105,7 +109,7 @@ fired ("BONK now matches your balanced strategy: liquidity increased, ...").
   word "simulated" or "paper."
 - **Account system is intentionally minimal.** Password sessions and Postgres
   persistence are implemented, but account recovery, email verification,
-  production-grade rate limiting, and background jobs are not.
+  and background jobs are not.
 - **The iOS module belongs to the earlier arbitrage-calculator phase** of the
   project, not the current paper-trading UI, and has not been compiled/tested
   (built on Windows, no Xcode available).
@@ -119,10 +123,10 @@ fired ("BONK now matches your balanced strategy: liquidity increased, ...").
 
 ## Numbers you can cite
 
-- 224 automated tests across 18 suites, all passing; strict-mode TypeScript
+- 231 automated tests across 19 suites, all passing; strict-mode TypeScript
 - 34 HTTP routes (market, auth, live/demo paper trading, settings + legacy/admin)
 - 6 seeded market scenarios; 3 simulated venues with distinct fee/liquidity profiles
-- 2 forward-only Postgres migrations shared by production and local tests
+- 3 forward-only Postgres migrations shared by production and local tests
 - Full product: backend engine + web SPA + iOS module (legacy feature) + docs
 
 ## Suggested resume bullets (pick 2–3, adjust to taste)
@@ -149,6 +153,6 @@ fired ("BONK now matches your balanced strategy: liquidity increased, ...").
   score must justify itself to a non-technical user; ML is a later phase)
 - Why deterministic seeded data? (reproducible demos, testable engine, no
   flaky external dependencies during evaluation)
-- What would production need next? (rate limiting, account recovery/email
-  verification, push notifications, a durable chain indexer, a real risk-data
+- What would production need next? (account recovery/email verification, push
+  notifications, a durable chain indexer, a real risk-data
   vendor, security review)

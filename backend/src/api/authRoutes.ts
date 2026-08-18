@@ -4,7 +4,12 @@ import { asArbError, ArbError } from "../core/errors.js";
 import type { AuthProvider, AuthenticatedUser } from "../auth/authService.js";
 import { credentialsSchema } from "../auth/authService.js";
 import type { SqlClient } from "../db/client.js";
-import { PortfolioRepository, WatchlistRepository } from "../db/repositories.js";
+import {
+  PortfolioRepository,
+  RateLimitRepository,
+  WatchlistRepository,
+  type RateLimitResult,
+} from "../db/repositories.js";
 import type { LivePaperTradingService } from "../paper/livePaper.js";
 
 /**
@@ -32,6 +37,14 @@ export interface AuthRoutesOptions {
   /** Constructed against the current database so persistence may recover at runtime. */
   createPaperTrading: (db: SqlClient) => LivePaperTradingService;
   startingMicroUsd: bigint;
+  clock: () => number;
+  rateLimits: {
+    authAttempts: number;
+    authWindowMs: number;
+    authNetworkAttempts: number;
+    paperAttempts: number;
+    paperWindowMs: number;
+  };
   /** Set Secure on cookies. Off for plain-HTTP local development. */
   secureCookies: boolean;
 }
@@ -103,10 +116,36 @@ function toSafeError(err: unknown): ArbError {
 
 export function createAuthRouter(options: AuthRoutesOptions): Router {
   const router = express.Router();
-  const { getAuth, getDb, createPaperTrading, startingMicroUsd, secureCookies } = options;
+  const { getAuth, getDb, createPaperTrading, startingMicroUsd, secureCookies, clock, rateLimits } = options;
+
+  const setLimitHeaders = (res: Response, result: RateLimitResult): void => {
+    res.setHeader("RateLimit-Limit", String(result.limit));
+    res.setHeader("RateLimit-Remaining", String(result.remaining));
+    res.setHeader("RateLimit-Reset", String(Math.max(1, Math.ceil((result.resetAtMs - clock()) / 1_000))));
+  };
+
+  const consumeLimit = async (
+    res: Response,
+    scope: string,
+    subject: string,
+    limit: number,
+    windowMs: number,
+  ): Promise<void> => {
+    const result = await new RateLimitRepository(getDb()!).consume(scope, subject, limit, windowMs, clock());
+    setLimitHeaders(res, result);
+  };
 
   const fail = (res: Response, err: unknown): void => {
     const e = toSafeError(err);
+    if (e.code === "RATE_LIMITED") {
+      const retryAfter = e.details?.retryAfterSeconds;
+      if (typeof retryAfter === "number") res.setHeader("Retry-After", String(retryAfter));
+      if (typeof e.details?.limit === "number") res.setHeader("RateLimit-Limit", String(e.details.limit));
+      res.setHeader("RateLimit-Remaining", "0");
+      if (typeof e.details?.resetAtMs === "number") {
+        res.setHeader("RateLimit-Reset", String(Math.max(1, Math.ceil((e.details.resetAtMs - clock()) / 1_000))));
+      }
+    }
     if (e.httpStatus >= 500) {
       // Full detail server-side; nothing sensitive to the client.
       console.error(JSON.stringify({ msg: "account request failed", code: e.code, error: e.message }));
@@ -164,6 +203,20 @@ export function createAuthRouter(options: AuthRoutesOptions): Router {
       if (!parsed.success) {
         throw new ArbError("VALIDATION_ERROR", "Enter a valid email and a password of at least 10 characters", 400);
       }
+      await consumeLimit(
+        res,
+        "auth:network",
+        req.ip ?? req.socket.remoteAddress ?? "unresolved-network",
+        rateLimits.authNetworkAttempts,
+        rateLimits.authWindowMs,
+      );
+      await consumeLimit(
+        res,
+        "auth:credentials",
+        parsed.data.email,
+        rateLimits.authAttempts,
+        rateLimits.authWindowMs,
+      );
       const session = await getAuth()!.signUp(parsed.data.email, parsed.data.password);
       // Fund the portfolio immediately so the account is never half-created.
       await new PortfolioRepository(getDb()!).ensureDefault(session.user.id, startingMicroUsd);
@@ -181,6 +234,20 @@ export function createAuthRouter(options: AuthRoutesOptions): Router {
       if (!parsed.success) {
         throw new ArbError("UNAUTHORIZED", "Email or password is incorrect", 401);
       }
+      await consumeLimit(
+        res,
+        "auth:network",
+        req.ip ?? req.socket.remoteAddress ?? "unresolved-network",
+        rateLimits.authNetworkAttempts,
+        rateLimits.authWindowMs,
+      );
+      await consumeLimit(
+        res,
+        "auth:credentials",
+        parsed.data.email,
+        rateLimits.authAttempts,
+        rateLimits.authWindowMs,
+      );
       const session = await getAuth()!.signIn(parsed.data.email, parsed.data.password);
       setSessionCookie(res, session.token, session.expiresAtMs, secureCookies);
       res.json({ user: { id: session.user.id, email: session.user.email } });
@@ -238,6 +305,7 @@ export function createAuthRouter(options: AuthRoutesOptions): Router {
   });
 
   const paperEntrySchema = z.object({
+    clientRequestId: z.string().uuid(),
     tokenMint: z.string().min(32).max(64),
     amountUsd: z.union([z.string().min(1).max(32), z.number().finite()]).transform(String),
     slippageBps: z.coerce.number().int().min(1).max(5_000).default(50),
@@ -247,13 +315,25 @@ export function createAuthRouter(options: AuthRoutesOptions): Router {
     try {
       const parsed = paperEntrySchema.safeParse(req.body);
       if (!parsed.success) {
-        throw new ArbError("VALIDATION_ERROR", "Enter a valid mint, USD amount, and slippage setting.", 400);
+        throw new ArbError(
+          "VALIDATION_ERROR",
+          "Enter a valid request id, mint, USD amount, and slippage setting.",
+          400,
+        );
       }
+      await consumeLimit(
+        res,
+        "paper:writes",
+        currentUser(res).id,
+        rateLimits.paperAttempts,
+        rateLimits.paperWindowMs,
+      );
       const position = await paperTrading().openPosition(
         currentUser(res).id,
         parsed.data.tokenMint,
         parsed.data.amountUsd,
         BigInt(parsed.data.slippageBps),
+        parsed.data.clientRequestId,
       );
       res.status(201).json({ simulated: true, executionEnabled: false, position });
     } catch (err) {
@@ -269,6 +349,13 @@ export function createAuthRouter(options: AuthRoutesOptions): Router {
     try {
       const parsed = paperCloseSchema.safeParse(req.body ?? {});
       if (!parsed.success) throw new ArbError("VALIDATION_ERROR", "Invalid close slippage setting.", 400);
+      await consumeLimit(
+        res,
+        "paper:writes",
+        currentUser(res).id,
+        rateLimits.paperAttempts,
+        rateLimits.paperWindowMs,
+      );
       const position = await paperTrading().closePosition(
         currentUser(res).id,
         req.params.id!,
