@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { ArbError } from "../core/errors.js";
 import type { AlertKind, AlertRule, AlertRuleState, FiredAlert } from "../alerts/engine.js";
+import type { TokenSnapshot } from "../alerts/observations.js";
 import { readBigInt, readDateMs, readString, type SqlClient, type SqlRow } from "./client.js";
 
 /**
@@ -1031,6 +1032,71 @@ export class AlertEventRepository {
     await this.db.query(
       `update alert_events set email_sent_at = to_timestamp($2::double precision / 1000) where id = $1`,
       [eventId, nowMs],
+    );
+  }
+}
+
+/** Latest observed snapshot per mint, diffed by the alert worker (migration 006). */
+export class TokenObservationRepository {
+  constructor(private readonly db: SqlClient) {}
+
+  /** One query for every mint in the pass; N round trips would dominate it. */
+  async getMany(mints: string[]): Promise<Map<string, TokenSnapshot>> {
+    if (mints.length === 0) return new Map();
+    const rows = await this.db.query(
+      `select mint, price_pico_usd, liquidity_usd_micro, volume_24h_usd_micro,
+              wallet_concentration_bps, mint_authority_revoked, freeze_authority_revoked,
+              observed_at
+         from token_observations where mint = any($1)`,
+      [mints],
+    );
+    const out = new Map<string, TokenSnapshot>();
+    for (const row of rows) {
+      const nullableBig = (v: unknown): bigint | null => (v === null ? null : readBigInt(v));
+      const nullableBool = (v: unknown): boolean | null => (v === null ? null : Boolean(v));
+      out.set(readString(row.mint), {
+        mint: readString(row.mint),
+        pricePicoUsd: nullableBig(row.price_pico_usd),
+        liquidityUsdMicro: nullableBig(row.liquidity_usd_micro),
+        volume24hUsdMicro: nullableBig(row.volume_24h_usd_micro),
+        walletConcentrationBps: nullableBig(row.wallet_concentration_bps),
+        mintAuthorityRevoked: nullableBool(row.mint_authority_revoked),
+        freezeAuthorityRevoked: nullableBool(row.freeze_authority_revoked),
+        observedAtMs: readDateMs(row.observed_at),
+      });
+    }
+    return out;
+  }
+
+  async put(snapshot: TokenSnapshot, nowMs: number): Promise<void> {
+    await this.db.query(
+      `insert into token_observations
+         (mint, price_pico_usd, liquidity_usd_micro, volume_24h_usd_micro,
+          wallet_concentration_bps, mint_authority_revoked, freeze_authority_revoked,
+          observed_at, updated_at)
+       values ($1, $2, $3, $4, $5, $6, $7,
+               to_timestamp($8::double precision / 1000),
+               to_timestamp($9::double precision / 1000))
+       on conflict (mint) do update set
+         price_pico_usd = excluded.price_pico_usd,
+         liquidity_usd_micro = excluded.liquidity_usd_micro,
+         volume_24h_usd_micro = excluded.volume_24h_usd_micro,
+         wallet_concentration_bps = excluded.wallet_concentration_bps,
+         mint_authority_revoked = excluded.mint_authority_revoked,
+         freeze_authority_revoked = excluded.freeze_authority_revoked,
+         observed_at = excluded.observed_at,
+         updated_at = excluded.updated_at`,
+      [
+        snapshot.mint,
+        snapshot.pricePicoUsd?.toString() ?? null,
+        snapshot.liquidityUsdMicro?.toString() ?? null,
+        snapshot.volume24hUsdMicro?.toString() ?? null,
+        snapshot.walletConcentrationBps?.toString() ?? null,
+        snapshot.mintAuthorityRevoked,
+        snapshot.freezeAuthorityRevoked,
+        snapshot.observedAtMs,
+        nowMs,
+      ],
     );
   }
 }

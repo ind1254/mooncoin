@@ -65,12 +65,24 @@ export interface AlertRuleState {
 export interface AlertObservation {
   mint: string;
   symbol: string | null;
-  /** Signed. 5-minute price change, bps. */
-  priceChange5mBps: bigint | null;
-  /** Signed. 1-hour liquidity change, bps. Negative means draining. */
-  liquidityChange1hBps: bigint | null;
-  /** Signed. 5-minute volume change, bps. */
-  volumeChange5mBps: bigint | null;
+  /**
+   * How long the change fields below span — the gap since the previous
+   * snapshot of this token, not a fixed window.
+   *
+   * The worker measures deltas between its own passes rather than reading a
+   * provider's 5m/1h buckets, because those buckets only exist for tokens in
+   * the trending feed. A watchlist token nobody is trading has no window data
+   * at all, and a rug drains liquidity in seconds anyway — so a short,
+   * honestly-labelled interval is both more available and more useful than an
+   * hourly average. Null when there is no previous snapshot to compare to.
+   */
+  intervalMs: number | null;
+  /** Signed price change over `intervalMs`, bps. */
+  priceChangeBps: bigint | null;
+  /** Signed liquidity change over `intervalMs`, bps. Negative means draining. */
+  liquidityChangeBps: bigint | null;
+  /** Signed volume change over `intervalMs`, bps. */
+  volumeChangeBps: bigint | null;
   /** Wallet-held share of supply, bps. On-chain where we could measure it. */
   holderConcentrationBps: bigint | null;
   /** Null when the mint account could not be read. */
@@ -108,6 +120,22 @@ const pct = (bps: bigint): string => {
   return `${value >= 0 ? "" : "-"}${Math.abs(value).toFixed(1)}%`;
 };
 
+/**
+ * Describes the measurement window in the alert text.
+ *
+ * Stating the real interval matters: "fell 40% in the last 45 seconds" and
+ * "fell 40% today" call for completely different reactions, and an alert that
+ * implies the wrong one is worse than no alert.
+ */
+function sinceLabel(intervalMs: number | null): string {
+  if (intervalMs === null || intervalMs <= 0) return "since the previous check";
+  const seconds = Math.round(intervalMs / 1000);
+  if (seconds < 90) return `in the last ${seconds} seconds`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 90) return `in the last ${minutes} minutes`;
+  return `in the last ${Math.round(minutes / 60)} hours`;
+}
+
 /** What the rule compares, and whether it currently holds. */
 interface Comparison {
   valueBps: bigint | null;
@@ -119,11 +147,12 @@ interface Comparison {
 
 function compare(rule: AlertRule, obs: AlertObservation): Comparison | null {
   const symbol = obs.symbol ?? "This token";
+  const since = sinceLabel(obs.intervalMs);
 
   switch (rule.kind) {
     case "price_change": {
-      if (obs.priceChange5mBps === null || rule.thresholdBps === null) return null;
-      const value = obs.priceChange5mBps;
+      if (obs.priceChangeBps === null || rule.thresholdBps === null) return null;
+      const value = obs.priceChangeBps;
       // "above" watches for a rise, "below" for a fall. A fall is a negative
       // number, so the threshold is negated rather than compared by magnitude.
       const matched =
@@ -131,34 +160,34 @@ function compare(rule: AlertRule, obs: AlertObservation): Comparison | null {
       return {
         valueBps: value,
         matched,
-        title: `${symbol} moved ${pct(value)} in 5 minutes`,
-        reason: `The price changed by ${pct(value)} over the last five minutes, crossing your ${pct(rule.thresholdBps)} threshold. This describes what happened, not what happens next.`,
+        title: `${symbol} moved ${pct(value)} ${since}`,
+        reason: `The price changed by ${pct(value)} ${since}, crossing your ${pct(rule.thresholdBps)} threshold. This describes what happened, not what happens next.`,
         severity: "info",
       };
     }
 
     case "liquidity_drop": {
-      if (obs.liquidityChange1hBps === null || rule.thresholdBps === null) return null;
+      if (obs.liquidityChangeBps === null || rule.thresholdBps === null) return null;
       // Only drains matter here, so a rise is recorded as a zero-size drop
       // rather than as a negative one that could satisfy a comparison.
-      const drop = obs.liquidityChange1hBps < 0n ? -obs.liquidityChange1hBps : 0n;
+      const drop = obs.liquidityChangeBps < 0n ? -obs.liquidityChangeBps : 0n;
       return {
         valueBps: drop,
         matched: drop >= rule.thresholdBps,
         title: `${symbol} liquidity fell ${pct(drop)}`,
-        reason: `Liquidity dropped ${pct(drop)} in the last hour. Less liquidity means exits cost more, and a large trade moves the price further.`,
+        reason: `Liquidity dropped ${pct(drop)} ${since}. Less liquidity means exits cost more, and a large trade moves the price further.`,
         severity: drop >= 5000n ? "critical" : "warning",
       };
     }
 
     case "volume_spike": {
-      if (obs.volumeChange5mBps === null || rule.thresholdBps === null) return null;
-      const value = obs.volumeChange5mBps;
+      if (obs.volumeChangeBps === null || rule.thresholdBps === null) return null;
+      const value = obs.volumeChangeBps;
       return {
         valueBps: value,
         matched: value >= rule.thresholdBps,
         title: `${symbol} volume up ${pct(value)}`,
-        reason: `Trading volume rose ${pct(value)} over five minutes. Activity is increasing; it does not indicate direction.`,
+        reason: `Trading volume rose ${pct(value)} ${since}. Activity is increasing; it does not indicate direction.`,
         severity: "info",
       };
     }

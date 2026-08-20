@@ -17,7 +17,9 @@
     "migrate": "tsx src/db/runMigrations.ts",
     "migrate:if-configured": "tsx src/db/runMigrations.ts --if-configured",
     "test": "vitest run",
-    "dev:local": "tsx watch src/api/server.ts --live"
+    "dev:local": "tsx watch src/api/server.ts --live",
+    "worker": "node dist/worker/main.js",
+    "worker:dev": "tsx watch src/worker/main.ts"
   },
   "dependencies": {
     "express": "^4.21.2",

@@ -32,9 +32,10 @@ const rule = (over: Partial<AlertRule> = {}): AlertRule => ({
 const obs = (over: Partial<AlertObservation> = {}): AlertObservation => ({
   mint: "MintA",
   symbol: "FLOOF",
-  priceChange5mBps: null,
-  liquidityChange1hBps: null,
-  volumeChange5mBps: null,
+  intervalMs: 60_000,
+  priceChangeBps: null,
+  liquidityChangeBps: null,
+  volumeChangeBps: null,
   holderConcentrationBps: null,
   mintAuthorityRevoked: null,
   freezeAuthorityRevoked: null,
@@ -66,7 +67,7 @@ describe("alert firing — transition, not state", () => {
   it("fires once when a condition begins, not on every evaluation after", () => {
     // The defining behaviour. A dead token sitting below the threshold must
     // not generate an alert every 30 seconds for the rest of its life.
-    const drained = obs({ liquidityChange1hBps: -3000n });
+    const drained = obs({ liquidityChangeBps: -3000n });
     const steps = Array.from({ length: 20 }, (_, i) => ({ obs: drained, atMs: NOW + i * 30_000 }));
 
     expect(run(rule(), steps).fires).toBe(1);
@@ -74,9 +75,9 @@ describe("alert firing — transition, not state", () => {
 
   it("fires again after the condition clears and returns", () => {
     const steps = [
-      { obs: obs({ liquidityChange1hBps: -3000n }), atMs: NOW },
-      { obs: obs({ liquidityChange1hBps: 500n }), atMs: NOW + 2 * 3600_000 }, // recovered
-      { obs: obs({ liquidityChange1hBps: -3000n }), atMs: NOW + 4 * 3600_000 }, // drained again
+      { obs: obs({ liquidityChangeBps: -3000n }), atMs: NOW },
+      { obs: obs({ liquidityChangeBps: 500n }), atMs: NOW + 2 * 3600_000 }, // recovered
+      { obs: obs({ liquidityChangeBps: -3000n }), atMs: NOW + 4 * 3600_000 }, // drained again
     ];
     expect(run(rule(), steps).fires).toBe(2);
   });
@@ -84,14 +85,14 @@ describe("alert firing — transition, not state", () => {
   it("fires on a first sighting that already matches", () => {
     // Starting to watch a token late is not a reason to stay silent about a
     // condition the user explicitly asked to hear about.
-    const result = evaluateRule(rule(), obs({ liquidityChange1hBps: -9000n }), null, NOW);
+    const result = evaluateRule(rule(), obs({ liquidityChangeBps: -9000n }), null, NOW);
     expect(result.fired).not.toBeNull();
   });
 
   it("does not fire when the condition never holds", () => {
     const steps = [
-      { obs: obs({ liquidityChange1hBps: -100n }), atMs: NOW },
-      { obs: obs({ liquidityChange1hBps: 400n }), atMs: NOW + MINUTE },
+      { obs: obs({ liquidityChangeBps: -100n }), atMs: NOW },
+      { obs: obs({ liquidityChangeBps: 400n }), atMs: NOW + MINUTE },
     ];
     expect(run(rule(), steps).fires).toBe(0);
   });
@@ -102,20 +103,20 @@ describe("alert firing — cooldown", () => {
     // A value oscillating around a threshold produces genuine transitions
     // every few seconds. Honest volatility must not become spam.
     const steps = [
-      { obs: obs({ liquidityChange1hBps: -2500n }), atMs: NOW },
-      { obs: obs({ liquidityChange1hBps: 100n }), atMs: NOW + MINUTE },
-      { obs: obs({ liquidityChange1hBps: -2500n }), atMs: NOW + 2 * MINUTE },
-      { obs: obs({ liquidityChange1hBps: 100n }), atMs: NOW + 3 * MINUTE },
-      { obs: obs({ liquidityChange1hBps: -2500n }), atMs: NOW + 4 * MINUTE },
+      { obs: obs({ liquidityChangeBps: -2500n }), atMs: NOW },
+      { obs: obs({ liquidityChangeBps: 100n }), atMs: NOW + MINUTE },
+      { obs: obs({ liquidityChangeBps: -2500n }), atMs: NOW + 2 * MINUTE },
+      { obs: obs({ liquidityChangeBps: 100n }), atMs: NOW + 3 * MINUTE },
+      { obs: obs({ liquidityChangeBps: -2500n }), atMs: NOW + 4 * MINUTE },
     ];
     expect(run(rule({ cooldownSeconds: 3600 }), steps).fires).toBe(1);
   });
 
   it("allows the next crossing once the cooldown has elapsed", () => {
     const steps = [
-      { obs: obs({ liquidityChange1hBps: -2500n }), atMs: NOW },
-      { obs: obs({ liquidityChange1hBps: 100n }), atMs: NOW + MINUTE },
-      { obs: obs({ liquidityChange1hBps: -2500n }), atMs: NOW + 61 * MINUTE },
+      { obs: obs({ liquidityChangeBps: -2500n }), atMs: NOW },
+      { obs: obs({ liquidityChangeBps: 100n }), atMs: NOW + MINUTE },
+      { obs: obs({ liquidityChangeBps: -2500n }), atMs: NOW + 61 * MINUTE },
     ];
     expect(run(rule({ cooldownSeconds: 3600 }), steps).fires).toBe(2);
   });
@@ -123,7 +124,7 @@ describe("alert firing — cooldown", () => {
   it("does not advance the cooldown clock when nothing was sent", () => {
     const suppressed = evaluateRule(
       rule(),
-      obs({ liquidityChange1hBps: 0n }),
+      obs({ liquidityChangeBps: 0n }),
       { matched: false, lastValueBps: null, lastFiredAtMs: NOW - 1000 },
       NOW,
     );
@@ -133,7 +134,7 @@ describe("alert firing — cooldown", () => {
 
 describe("alert firing — unavailable inputs", () => {
   it("leaves state untouched rather than recording a non-match", () => {
-    const result = evaluateRule(rule(), obs({ liquidityChange1hBps: null }), null, NOW);
+    const result = evaluateRule(rule(), obs({ liquidityChangeBps: null }), null, NOW);
     expect(result.fired).toBeNull();
     expect(result.nextState).toBeNull();
   });
@@ -143,10 +144,10 @@ describe("alert firing — unavailable inputs", () => {
     // good read would look like a fresh crossing and fire a second time for
     // a condition that never actually stopped holding.
     const steps = [
-      { obs: obs({ liquidityChange1hBps: -4000n }), atMs: NOW },
-      { obs: obs({ liquidityChange1hBps: null }), atMs: NOW + MINUTE }, // provider down
-      { obs: obs({ liquidityChange1hBps: null }), atMs: NOW + 2 * MINUTE },
-      { obs: obs({ liquidityChange1hBps: -4000n }), atMs: NOW + 10 * 3600_000 }, // well past cooldown
+      { obs: obs({ liquidityChangeBps: -4000n }), atMs: NOW },
+      { obs: obs({ liquidityChangeBps: null }), atMs: NOW + MINUTE }, // provider down
+      { obs: obs({ liquidityChangeBps: null }), atMs: NOW + 2 * MINUTE },
+      { obs: obs({ liquidityChangeBps: -4000n }), atMs: NOW + 10 * 3600_000 }, // well past cooldown
     ];
     expect(run(rule(), steps).fires).toBe(1);
   });
@@ -154,7 +155,7 @@ describe("alert firing — unavailable inputs", () => {
   it("never fires for a disabled rule", () => {
     const result = evaluateRule(
       rule({ enabled: false }),
-      obs({ liquidityChange1hBps: -9000n }),
+      obs({ liquidityChangeBps: -9000n }),
       null,
       NOW,
     );
@@ -167,13 +168,13 @@ describe("alert kinds", () => {
   it("treats a price rise and a price fall as opposite directions, not magnitudes", () => {
     const fall = evaluateRule(
       rule({ kind: "price_change", thresholdBps: 2000n, direction: "below" }),
-      obs({ priceChange5mBps: -2500n }),
+      obs({ priceChangeBps: -2500n }),
       null,
       NOW,
     );
     const rise = evaluateRule(
       rule({ kind: "price_change", thresholdBps: 2000n, direction: "below" }),
-      obs({ priceChange5mBps: 2500n }),
+      obs({ priceChangeBps: 2500n }),
       null,
       NOW,
     );
@@ -184,7 +185,7 @@ describe("alert kinds", () => {
   it("ignores a liquidity increase for a drop rule", () => {
     const result = evaluateRule(
       rule({ kind: "liquidity_drop", thresholdBps: 2000n }),
-      obs({ liquidityChange1hBps: 9000n }),
+      obs({ liquidityChangeBps: 9000n }),
       null,
       NOW,
     );
@@ -194,13 +195,13 @@ describe("alert kinds", () => {
   it("escalates severity for a severe liquidity drain", () => {
     const mild = evaluateRule(
       rule({ thresholdBps: 1000n }),
-      obs({ liquidityChange1hBps: -2000n }),
+      obs({ liquidityChangeBps: -2000n }),
       null,
       NOW,
     );
     const severe = evaluateRule(
       rule({ thresholdBps: 1000n }),
-      obs({ liquidityChange1hBps: -7000n }),
+      obs({ liquidityChangeBps: -7000n }),
       null,
       NOW,
     );
@@ -236,7 +237,7 @@ describe("alert kinds", () => {
   });
 
   it("states the fact in the title and the meaning in the reason, without predicting", () => {
-    const result = evaluateRule(rule(), obs({ liquidityChange1hBps: -3000n }), null, NOW);
+    const result = evaluateRule(rule(), obs({ liquidityChangeBps: -3000n }), null, NOW);
     expect(result.fired!.title).toMatch(/FLOOF/);
     expect(result.fired!.reason.length).toBeGreaterThan(30);
     // The house rule from the research page: no forecasting language.

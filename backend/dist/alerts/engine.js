@@ -29,47 +29,66 @@ const pct = (bps) => {
     const value = Number(bps) / 100;
     return `${value >= 0 ? "" : "-"}${Math.abs(value).toFixed(1)}%`;
 };
+/**
+ * Describes the measurement window in the alert text.
+ *
+ * Stating the real interval matters: "fell 40% in the last 45 seconds" and
+ * "fell 40% today" call for completely different reactions, and an alert that
+ * implies the wrong one is worse than no alert.
+ */
+function sinceLabel(intervalMs) {
+    if (intervalMs === null || intervalMs <= 0)
+        return "since the previous check";
+    const seconds = Math.round(intervalMs / 1000);
+    if (seconds < 90)
+        return `in the last ${seconds} seconds`;
+    const minutes = Math.round(seconds / 60);
+    if (minutes < 90)
+        return `in the last ${minutes} minutes`;
+    return `in the last ${Math.round(minutes / 60)} hours`;
+}
 function compare(rule, obs) {
     const symbol = obs.symbol ?? "This token";
+    const since = sinceLabel(obs.intervalMs);
     switch (rule.kind) {
         case "price_change": {
-            if (obs.priceChange5mBps === null || rule.thresholdBps === null)
+            if (obs.priceChangeBps === null || rule.thresholdBps === null)
                 return null;
-            const value = obs.priceChange5mBps;
+            const value = obs.priceChangeBps;
             // "above" watches for a rise, "below" for a fall. A fall is a negative
             // number, so the threshold is negated rather than compared by magnitude.
             const matched = rule.direction === "below" ? value <= -rule.thresholdBps : value >= rule.thresholdBps;
             return {
                 valueBps: value,
                 matched,
-                title: `${symbol} moved ${pct(value)} in 5 minutes`,
-                reason: `The price changed by ${pct(value)} over the last five minutes, crossing your ${pct(rule.thresholdBps)} threshold. This describes what happened, not what happens next.`,
+                title: `${symbol} moved ${pct(value)} ${since}`,
+                reason: `The price changed by ${pct(value)} ${since}, crossing your ${pct(rule.thresholdBps)} threshold. This describes what happened, not what happens next.`,
                 severity: "info",
             };
         }
         case "liquidity_drop": {
-            if (obs.liquidityChange1hBps === null || rule.thresholdBps === null)
+            if (obs.liquidityChangeBps === null || rule.thresholdBps === null)
                 return null;
             // Only drains matter here, so a rise is recorded as a zero-size drop
             // rather than as a negative one that could satisfy a comparison.
-            const drop = obs.liquidityChange1hBps < 0n ? -obs.liquidityChange1hBps : 0n;
+            const drop = obs.liquidityChangeBps < 0n ? -obs.liquidityChangeBps : 0n;
             return {
                 valueBps: drop,
                 matched: drop >= rule.thresholdBps,
                 title: `${symbol} liquidity fell ${pct(drop)}`,
-                reason: `Liquidity dropped ${pct(drop)} in the last hour. Less liquidity means exits cost more, and a large trade moves the price further.`,
+                reason: `Liquidity dropped ${pct(drop)} ${since}. Less liquidity means exits cost more, and a large trade moves the price further.`,
                 severity: drop >= 5000n ? "critical" : "warning",
             };
         }
         case "volume_spike": {
-            if (obs.volumeChange5mBps === null || rule.thresholdBps === null)
+            if (obs.volumeChangeBps === null || rule.thresholdBps === null)
                 return null;
-            const value = obs.volumeChange5mBps;
+            const value = obs.volumeChangeBps;
             return {
                 valueBps: value,
                 matched: value >= rule.thresholdBps,
                 title: `${symbol} volume up ${pct(value)}`,
-                reason: `Trading volume rose ${pct(value)} over five minutes. Activity is increasing; it does not indicate direction.`,
+                reason: `Trading volume rose ${pct(value)} ${since}. Activity is increasing; it does not indicate direction.`,
                 severity: "info",
             };
         }
