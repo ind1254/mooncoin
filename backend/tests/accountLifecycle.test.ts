@@ -210,7 +210,12 @@ describe("account email configuration", () => {
         insert into schema_migrations (name) values
           ('001_init.sql'), ('002_live_paper_positions.sql'), ('003_production_safeguards.sql');
       `);
-      expect((await migrate(legacy)).applied).toEqual(["004_account_lifecycle.sql"]);
+      // Asserts that 004 ran, not that it was the ONLY thing that ran: a
+      // database this far behind will also pick up every migration added
+      // since, and pinning the exact list breaks on the next unrelated one.
+      const { applied } = await migrate(legacy);
+      expect(applied).toContain("004_account_lifecycle.sql");
+      expect(applied).not.toContain("003_production_safeguards.sql"); // already recorded
       const rows = await legacy.query<{ email_verified_at: Date | string | null }>(
         "select email_verified_at from users where email = 'legacy@example.com'",
       );
