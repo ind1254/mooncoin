@@ -351,7 +351,7 @@ async function researchOver(rpc: SolanaRpcClient): Promise<{ status: number; bod
     clock: () => START,
     fetchImpl: async () => new Response(JSON.stringify(jupFixture("search-bonk")), { status: 200 }),
   });
-  deps.research = new ResearchService(discovery, rpc, { clock: () => START });
+  deps.research = new ResearchService(discovery, rpc, { clock: () => START, maxHoldersForOnChainScan: Number.MAX_SAFE_INTEGER });
 
   const app = createApp(deps);
   const s = app.listen(0);
@@ -409,6 +409,46 @@ describe("research API — holder concentration serialization", () => {
     expect(throttled.body.verification.holders.detail).not.toBe(
       broken.body.verification.holders.detail,
     );
+  });
+
+  it("skips the scan for a token with too many holders, without spending the call", async () => {
+    // getTokenLargestAccounts scales with holder count, so on an established
+    // token it burns the full RPC timeout and still falls back. Skipping early
+    // returns the same answer immediately. Counted rather than asserted by
+    // message, because "did we avoid the network" is the actual claim.
+    let largestCalls = 0;
+    const counting = new SolanaRpcClient({
+      fetchImpl: async (_url, init) => {
+        const { method } = JSON.parse(String(init?.body)) as { method: string };
+        if (method === "getTokenLargestAccounts") largestCalls += 1;
+        return new Response(JSON.stringify(solFixture("bonk-mint")), { status: 200 });
+      },
+    });
+
+    const deps = createTestDeps(() => START);
+    const discovery = new JupiterTokenSearchProvider({
+      clock: () => START,
+      fetchImpl: async () =>
+        new Response(JSON.stringify(jupFixture("search-bonk")), { status: 200 }),
+    });
+    // Default threshold, and BONK's fixture reports far more holders than it.
+    deps.research = new ResearchService(discovery, counting, { clock: () => START });
+
+    const app = createApp(deps);
+    const s = app.listen(0);
+    try {
+      const addr = s.address();
+      const url = typeof addr === "object" && addr ? `http://127.0.0.1:${addr.port}` : "";
+      const body = (await (await fetch(`${url}/v1/research/${BONK}`)).json()) as any;
+
+      expect(largestCalls).toBe(0);
+      expect(body.verification.holders.status).toBe("unavailable");
+      expect(body.verification.holders.detail).toMatch(/too many to scan/i);
+      // The authorities read is unaffected by the skip.
+      expect(body.verification.status).toBe("verified");
+    } finally {
+      s.close();
+    }
   });
 
   it("reports null holders when the feature never ran", async () => {

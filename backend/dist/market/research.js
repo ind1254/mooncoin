@@ -4,6 +4,20 @@ import { readHolderConcentration } from "./solana/holders.js";
 import { readMintAccount } from "./solana/mint.js";
 import { SOLANA_MAINNET_SOURCE } from "./solana/riskProvider.js";
 const RISK_BANDS = { lowBelow: 30, mediumBelow: 60 };
+/**
+ * Above this reported holder count, skip the on-chain concentration scan.
+ *
+ * getTokenLargestAccounts walks the mint's token accounts, so it gets slower
+ * as a token gets more successful. Measured against a keyed endpoint: a token
+ * with tens of holders answers immediately, while BONK (hundreds of thousands)
+ * exceeds the client's 8s timeout and the serverless function's budget.
+ *
+ * This is a product-shaped limit, not just a technical one. Concentration
+ * matters most for young, thin tokens — exactly the ones that are cheap to
+ * scan. For an established token the question is largely moot, and the
+ * discovery provider's reported figure is a reasonable stand-in.
+ */
+const MAX_HOLDERS_FOR_ON_CHAIN_SCAN = 25_000;
 const bpsToPct = (bps) => Number(bps) / 100;
 const microToUsd = (v) => Number(v / 1000000n);
 /**
@@ -300,11 +314,13 @@ export class ResearchService {
     loader;
     holderLoader;
     simulationAvailable;
+    maxHoldersForScan;
     constructor(discovery, rpc, options = {}) {
         this.discovery = discovery;
         this.rpc = rpc;
         this.clock = options.clock ?? Date.now;
         this.simulationAvailable = options.simulationAvailable ?? (async () => false);
+        this.maxHoldersForScan = options.maxHoldersForOnChainScan ?? MAX_HOLDERS_FOR_ON_CHAIN_SCAN;
         this.loader = new CachedLoader({
             ttlMs: options.mintCacheTtlMs ?? 600_000,
             clock: this.clock,
@@ -357,7 +373,24 @@ export class ResearchService {
         // account we just read. Without it the ratio would divide a chain number
         // by a vendor number, so we simply do not attempt it.
         let holders = null;
-        if (mintRead?.status === "found" && verification.status === "verified") {
+        const tooManyHolders = token.market.holderCount !== null && token.market.holderCount > this.maxHoldersForScan;
+        if (tooManyHolders) {
+            // getTokenLargestAccounts scans the mint's token accounts, so its cost
+            // grows with holder count. On an established token it reliably exceeds
+            // both our RPC timeout and the serverless function budget.
+            //
+            // Failing fast matters: attempting it anyway spent eight seconds and an
+            // RPC credit on every request for a large token, and still fell back.
+            // Skipping costs nothing and returns the same answer immediately.
+            verification = {
+                ...verification,
+                holders: {
+                    status: "unavailable",
+                    detail: `This token has roughly ${token.market.holderCount.toLocaleString()} holders, too many to scan within the request budget, so concentration is not measured on-chain here.`,
+                },
+            };
+        }
+        else if (mintRead?.status === "found" && verification.status === "verified") {
             const supply = mintRead.mint.supplyBaseUnits;
             try {
                 const cached = await this.holderLoader.load(mint, () => readHolderConcentration(this.rpc, mint, supply, signal));
