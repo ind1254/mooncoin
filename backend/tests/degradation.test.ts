@@ -117,6 +117,15 @@ describe("database connected but migrations missing", () => {
   beforeEach(async () => {
     db = createPgliteClient();
     // Deliberately NOT migrated: connection works, schema does not exist.
+    //
+    // The premise has two halves and this proves the first. PGlite initializes
+    // lazily, so without a warm-up the very first query can fail for reasons
+    // other than the missing table — which health then classifies as
+    // "unavailable" rather than "schema_missing", failing this test for a
+    // reason it is not about. Only visible under parallel load, which is
+    // exactly when it is hardest to diagnose.
+    await db.query("select 1");
+
     const deps = createTestDeps(() => START);
     deps.db = db;
     deps.auth = new PasswordAuthProvider(db, { clock: () => START });

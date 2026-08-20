@@ -456,3 +456,223 @@ export class WatchlistRepository {
         return rows.length > 0;
     }
 }
+/** Defaults mirror the column defaults so an absent row behaves identically. */
+export const DEFAULT_NOTIFICATION_PREFERENCES = {
+    inAppEnabled: true,
+    emailEnabled: false,
+    pushEnabled: false,
+    deliveryMode: "immediate",
+    quietStartMin: null,
+    quietEndMin: null,
+    maxEmailsPerDay: 20,
+};
+function readPreferences(row) {
+    return {
+        inAppEnabled: Boolean(row.in_app_enabled),
+        emailEnabled: Boolean(row.email_enabled),
+        pushEnabled: Boolean(row.push_enabled),
+        deliveryMode: readString(row.delivery_mode),
+        quietStartMin: row.quiet_start_min === null ? null : readInteger(row.quiet_start_min),
+        quietEndMin: row.quiet_end_min === null ? null : readInteger(row.quiet_end_min),
+        maxEmailsPerDay: readInteger(row.max_emails_per_day),
+    };
+}
+export class NotificationPreferencesRepository {
+    db;
+    constructor(db) {
+        this.db = db;
+    }
+    /**
+     * Reading never writes. A user who has not touched their settings gets the
+     * defaults without a row being created for them, so the table holds only
+     * deliberate choices rather than one row per signup.
+     */
+    async get(userId) {
+        const rows = await this.db.query(`select in_app_enabled, email_enabled, push_enabled, delivery_mode,
+              quiet_start_min, quiet_end_min, max_emails_per_day
+         from notification_preferences where user_id = $1`, [userId]);
+        return rows[0] ? readPreferences(rows[0]) : { ...DEFAULT_NOTIFICATION_PREFERENCES };
+    }
+    /** Upsert of a complete preference set. Partial updates merge in the caller. */
+    async put(userId, prefs, nowMs) {
+        await this.db.query(`insert into notification_preferences
+         (user_id, in_app_enabled, email_enabled, push_enabled, delivery_mode,
+          quiet_start_min, quiet_end_min, max_emails_per_day, updated_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, to_timestamp($9::double precision / 1000))
+       on conflict (user_id) do update set
+         in_app_enabled = excluded.in_app_enabled,
+         email_enabled  = excluded.email_enabled,
+         push_enabled   = excluded.push_enabled,
+         delivery_mode  = excluded.delivery_mode,
+         quiet_start_min = excluded.quiet_start_min,
+         quiet_end_min   = excluded.quiet_end_min,
+         max_emails_per_day = excluded.max_emails_per_day,
+         updated_at     = excluded.updated_at`, [
+            userId,
+            prefs.inAppEnabled,
+            prefs.emailEnabled,
+            prefs.pushEnabled,
+            prefs.deliveryMode,
+            prefs.quietStartMin,
+            prefs.quietEndMin,
+            prefs.maxEmailsPerDay,
+            nowMs,
+        ]);
+    }
+    /** Emails already sent today, for the per-user daily cap. */
+    async emailsSentSince(userId, sinceMs) {
+        const rows = await this.db.query(`select count(*)::int as n from alert_events
+        where user_id = $1 and email_sent_at >= to_timestamp($2::double precision / 1000)`, [userId, sinceMs]);
+        return rows[0] ? readInteger(rows[0].n) : 0;
+    }
+}
+function readAlertRule(row) {
+    return {
+        id: readString(row.id),
+        userId: readString(row.user_id),
+        scope: readString(row.scope),
+        mint: readNullableString(row.mint),
+        kind: readString(row.kind),
+        thresholdBps: row.threshold_bps === null ? null : readBigInt(row.threshold_bps),
+        direction: readNullableString(row.direction),
+        cooldownSeconds: readInteger(row.cooldown_seconds),
+        enabled: Boolean(row.enabled),
+    };
+}
+const RULE_COLUMNS = `id, user_id, scope, mint, kind, threshold_bps, direction, cooldown_seconds, enabled`;
+export class AlertRuleRepository {
+    db;
+    constructor(db) {
+        this.db = db;
+    }
+    async listForUser(userId) {
+        const rows = await this.db.query(`select ${RULE_COLUMNS} from alert_rules where user_id = $1 order by created_at`, [userId]);
+        return rows.map(readAlertRule);
+    }
+    async create(userId, input, nowMs) {
+        const rows = await this.db.query(`insert into alert_rules
+         (user_id, scope, mint, kind, threshold_bps, direction, cooldown_seconds, created_at, updated_at)
+       values ($1, $2, $3, $4, $5, $6, $7,
+               to_timestamp($8::double precision / 1000),
+               to_timestamp($8::double precision / 1000))
+       returning ${RULE_COLUMNS}`, [
+            userId,
+            input.scope,
+            input.mint,
+            input.kind,
+            input.thresholdBps?.toString() ?? null,
+            input.direction,
+            input.cooldownSeconds,
+            nowMs,
+        ]);
+        return readAlertRule(rows[0]);
+    }
+    /** Ownership is part of the predicate, never checked separately afterwards. */
+    async setEnabled(userId, ruleId, enabled, nowMs) {
+        const rows = await this.db.query(`update alert_rules set enabled = $3, updated_at = to_timestamp($4::double precision / 1000)
+        where id = $2 and user_id = $1 returning id`, [userId, ruleId, enabled, nowMs]);
+        return rows.length > 0;
+    }
+    async remove(userId, ruleId) {
+        const rows = await this.db.query(`delete from alert_rules where id = $2 and user_id = $1 returning id`, [userId, ruleId]);
+        return rows.length > 0;
+    }
+    /**
+     * Every (rule, mint) pair the worker should evaluate this pass.
+     *
+     * Watchlist-scoped rules fan out across the user's watchlist, so adding a
+     * token automatically inherits their existing rules instead of requiring the
+     * rule to be recreated per token. Resolved in SQL rather than in the worker
+     * because the join is what keeps this one query instead of N.
+     */
+    async resolveEnabled(limit = 5_000) {
+        const rows = await this.db.query(`select ${RULE_COLUMNS.split(", ").map((c) => `r.${c}`).join(", ")}, w.token_mint as target_mint
+         from alert_rules r
+         join watchlist_items w on w.user_id = r.user_id
+        where r.enabled and r.scope = 'watchlist'
+        union all
+       select ${RULE_COLUMNS.split(", ").map((c) => `r.${c}`).join(", ")}, r.mint as target_mint
+         from alert_rules r
+        where r.enabled and r.scope = 'mint'
+        limit $1`, [limit]);
+        return rows.map((row) => ({ rule: readAlertRule(row), mint: readString(row.target_mint) }));
+    }
+}
+export class AlertRuleStateRepository {
+    db;
+    constructor(db) {
+        this.db = db;
+    }
+    async get(ruleId, mint) {
+        const rows = await this.db.query(`select matched, last_value_bps, last_fired_at
+         from alert_rule_state where rule_id = $1 and mint = $2`, [ruleId, mint]);
+        if (!rows[0])
+            return null;
+        return {
+            matched: Boolean(rows[0].matched),
+            lastValueBps: rows[0].last_value_bps === null ? null : readBigInt(rows[0].last_value_bps),
+            lastFiredAtMs: readNullableDateMs(rows[0].last_fired_at),
+        };
+    }
+    async put(ruleId, mint, state, nowMs) {
+        await this.db.query(`insert into alert_rule_state (rule_id, mint, matched, last_value_bps, last_fired_at, updated_at)
+       values ($1, $2, $3, $4,
+               case when $5::double precision is null then null
+                    else to_timestamp($5::double precision / 1000) end,
+               to_timestamp($6::double precision / 1000))
+       on conflict (rule_id, mint) do update set
+         matched = excluded.matched,
+         last_value_bps = excluded.last_value_bps,
+         last_fired_at = excluded.last_fired_at,
+         updated_at = excluded.updated_at`, [ruleId, mint, state.matched, state.lastValueBps?.toString() ?? null, state.lastFiredAtMs, nowMs]);
+    }
+}
+export class AlertEventRepository {
+    db;
+    constructor(db) {
+        this.db = db;
+    }
+    async insert(alert, nowMs) {
+        const rows = await this.db.query(`insert into alert_events (user_id, rule_id, mint, symbol, kind, title, reason, severity, fired_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, to_timestamp($9::double precision / 1000))
+       returning id`, [
+            alert.userId,
+            alert.ruleId,
+            alert.mint,
+            alert.symbol,
+            alert.kind,
+            alert.title,
+            alert.reason,
+            alert.severity,
+            nowMs,
+        ]);
+        return readString(rows[0].id);
+    }
+    async listForUser(userId, limit = 50) {
+        const rows = await this.db.query(`select id, mint, symbol, kind, title, reason, severity, fired_at, read_at
+         from alert_events where user_id = $1 order by fired_at desc limit $2`, [userId, limit]);
+        return rows.map((row) => ({
+            id: readString(row.id),
+            mint: readString(row.mint),
+            symbol: readNullableString(row.symbol),
+            kind: readString(row.kind),
+            title: readString(row.title),
+            reason: readString(row.reason),
+            severity: readString(row.severity),
+            firedAtMs: readDateMs(row.fired_at),
+            readAtMs: readNullableDateMs(row.read_at),
+        }));
+    }
+    async unreadCount(userId) {
+        const rows = await this.db.query(`select count(*)::int as n from alert_events where user_id = $1 and read_at is null`, [userId]);
+        return rows[0] ? readInteger(rows[0].n) : 0;
+    }
+    async markAllRead(userId, nowMs) {
+        const rows = await this.db.query(`update alert_events set read_at = to_timestamp($2::double precision / 1000)
+        where user_id = $1 and read_at is null returning id`, [userId, nowMs]);
+        return rows.length;
+    }
+    async markEmailSent(eventId, nowMs) {
+        await this.db.query(`update alert_events set email_sent_at = to_timestamp($2::double precision / 1000) where id = $1`, [eventId, nowMs]);
+    }
+}
