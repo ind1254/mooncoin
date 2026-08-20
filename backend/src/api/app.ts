@@ -29,7 +29,12 @@ import { ResearchService, type ResearchProfile } from "../market/research.js";
 import { TradabilityService, type TradabilityCheck, type TradabilityPolicy } from "../market/tradability.js";
 import { SolanaRpcClient } from "../market/solana/rpc.js";
 import type { TokenSearchResult } from "../market/types.js";
-import type { RouteComparison, RouteQuote, TokenMarketView } from "../market/types.js";
+import type {
+  OnChainMintVerification,
+  RouteComparison,
+  RouteQuote,
+  TokenMarketView,
+} from "../market/types.js";
 import { computeScores, type ScoringLimits, type TokenScores } from "../scoring/scores.js";
 import { PaperTradingEngine } from "../paper/engine.js";
 import { LivePaperTradingService } from "../paper/livePaper.js";
@@ -368,6 +373,34 @@ function hasDuplicateSymbols(results: TokenSearchResult[]): boolean {
 const usdOrNull = (v: bigint | null): string | null => (v === null ? null : microToUsdString(v));
 const pctOrNull = (v: bigint | null): string | null => (v === null ? null : pctStr(v));
 
+/**
+ * Flattens the on-chain verification record for JSON.
+ *
+ * The holder figures are bigint basis points internally, and JSON.stringify
+ * throws outright on a BigInt — so passing this record through untouched would
+ * turn every research request into a 500. Basis points are bounded by 10_000,
+ * far inside Number's exact range, so widening them here loses nothing.
+ */
+function serializeVerification(v: OnChainMintVerification): Record<string, unknown> {
+  const { holders, ...rest } = v;
+  if (!holders) return { ...rest, holders: null };
+
+  const bps = (value: bigint | undefined): number | null =>
+    value === undefined ? null : Number(value);
+
+  return {
+    ...rest,
+    holders: {
+      status: holders.status,
+      detail: holders.detail,
+      concentrationBps: bps(holders.concentrationBps),
+      programHeldBps: bps(holders.programHeldBps),
+      unclassifiedBps: bps(holders.unclassifiedBps),
+      walletHolderCount: holders.walletHolderCount ?? null,
+    },
+  };
+}
+
 function sumVolume(token: LiveFeedToken, window: "fiveMinutes" | "oneHour" | "twentyFourHours"): bigint | null {
   const value = token[window];
   if (value.buyVolumeUsdMicro === null && value.sellVolumeUsdMicro === null) return null;
@@ -570,7 +603,7 @@ function serializeProfile(p: ResearchProfile): Record<string, unknown> {
       organicScoreLabel: p.market.organicScoreLabel,
       source: p.marketSource,
     },
-    verification: p.verification,
+    verification: serializeVerification(p.verification),
     authorities: p.authorities,
     risk: p.risk,
     simulation: p.simulation,

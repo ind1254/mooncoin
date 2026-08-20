@@ -1,10 +1,12 @@
 import { ArbError } from "../core/errors.js";
 import { CachedLoader } from "./cache.js";
+import { readHolderConcentration, type HolderConcentration } from "./solana/holders.js";
 import { readMintAccount, type MintReadResult } from "./solana/mint.js";
 import { SOLANA_MAINNET_SOURCE } from "./solana/riskProvider.js";
 import type { SolanaRpcClient } from "./solana/rpc.js";
 import type {
   DiscoveredMarketFacts,
+  OnChainHolderVerification,
   OnChainMintVerification,
   TokenSearchProvider,
   TokenSearchResult,
@@ -87,7 +89,11 @@ const microToUsd = (v: bigint): number => Number(v / 1_000_000n);
  * is intentionally out of scope here. Points are stated per factor so the UI
  * can show exactly what produced the number.
  */
-function assessRisk(token: TokenSearchResult, mint: MintReadResult | null): ResearchRisk {
+function assessRisk(
+  token: TokenSearchResult,
+  mint: MintReadResult | null,
+  holders: HolderConcentration | null,
+): ResearchRisk {
   const factors: ResearchFactor[] = [];
   const add = (f: ResearchFactor) => factors.push(f);
 
@@ -154,9 +160,45 @@ function assessRisk(token: TokenSearchResult, mint: MintReadResult | null): Rese
     });
   }
 
-  // --- Holder concentration: reported by the discovery provider ---
-  const top = token.market.topHolderPctBps;
-  if (top !== null) {
+  // --- Holder concentration: measured on-chain where we could, else reported ---
+  //
+  // The two differ by more than provenance. The discovery provider counts the
+  // largest token accounts; we count the largest accounts owned by KEYPAIR
+  // wallets, because pool vaults and bonding curves are tradable supply rather
+  // than a holder who can dump. On a pump.fun token still on its curve those
+  // answers are not close.
+  if (holders) {
+    const pct = bpsToPct(holders.concentrationBps);
+    const points = pct >= 50 ? 25 : pct >= 30 ? 12 : 0;
+    const poolPct = bpsToPct(holders.programHeldBps);
+    const poolNote =
+      holders.programHeldBps > 0n
+        ? ` A further ${poolPct.toFixed(1)}% is held by pools or bonding curves, which is supply you can trade against rather than a holder.`
+        : "";
+
+    add({
+      id: "holder-concentration",
+      label: "Holder concentration",
+      fact: holders.complete
+        ? `The top ${holders.walletHolderCount} wallet holders control ${pct.toFixed(1)}% of supply.${poolNote}`
+        : `The top ${holders.walletHolderCount} wallet holders control at least ${pct.toFixed(1)}% of supply; ${bpsToPct(holders.unclassifiedBps).toFixed(1)}% could not be attributed.${poolNote}`,
+      interpretation:
+        points >= 25
+          ? "A small group of wallets could move the price substantially by selling."
+          : points > 0
+            ? "Concentration among wallets is elevated; large holders could move the price."
+            : "Supply is reasonably distributed across wallets.",
+      direction: points > 0 ? "negative" : "positive",
+      // Incomplete attribution is a floor, not a verified total, so it must
+      // not carry the same badge as a fully classified measurement.
+      status: holders.complete ? "verified" : "reported",
+      source: SOLANA_MAINNET_SOURCE,
+      // An unattributed remainder could be either bucket; charge a little for
+      // the uncertainty rather than assuming the friendly reading.
+      points: holders.complete ? points : points + 5,
+    });
+  } else if (token.market.topHolderPctBps !== null) {
+    const top = token.market.topHolderPctBps;
     const pct = bpsToPct(top);
     const points = pct >= 50 ? 25 : pct >= 30 ? 12 : 0;
     add({
@@ -293,12 +335,35 @@ export interface ResearchServiceOptions {
   /** True when Moonpaper can produce executable quotes for this mint. */
   simulationAvailable?: (mint: string) => Promise<boolean>;
   mintCacheTtlMs?: number;
+  /** Short by design: holder balances change on every trade. */
+  holderCacheTtlMs?: number;
   clock?: () => number;
+}
+
+/** Turns a holder measurement into the record the API and UI display. */
+function describeHolders(holders: HolderConcentration): OnChainHolderVerification {
+  const pct = (bps: bigint): string => bpsToPct(bps).toFixed(1);
+  const poolNote =
+    holders.programHeldBps > 0n
+      ? ` ${pct(holders.programHeldBps)}% is held by pools or bonding curves and is excluded.`
+      : "";
+
+  return {
+    status: holders.complete ? "verified" : "incomplete",
+    concentrationBps: holders.concentrationBps,
+    programHeldBps: holders.programHeldBps,
+    walletHolderCount: holders.walletHolderCount,
+    unclassifiedBps: holders.unclassifiedBps,
+    detail: holders.complete
+      ? `Top ${holders.walletHolderCount} wallet holders control ${pct(holders.concentrationBps)}% of supply.${poolNote}`
+      : `Top ${holders.walletHolderCount} wallet holders control at least ${pct(holders.concentrationBps)}% of supply; ${pct(holders.unclassifiedBps)}% could not be attributed.${poolNote}`,
+  };
 }
 
 export class ResearchService {
   private readonly clock: () => number;
   private readonly loader: CachedLoader<MintReadResult>;
+  private readonly holderLoader: CachedLoader<HolderConcentration>;
   private readonly simulationAvailable: (mint: string) => Promise<boolean>;
 
   constructor(
@@ -310,6 +375,13 @@ export class ResearchService {
     this.simulationAvailable = options.simulationAvailable ?? (async () => false);
     this.loader = new CachedLoader<MintReadResult>({
       ttlMs: options.mintCacheTtlMs ?? 600_000,
+      clock: this.clock,
+    });
+    // Balances move on every trade, and each miss costs three RPC calls
+    // against the mint cache's one, so this TTL is deliberately much shorter
+    // and the loader's single-flight behaviour matters more here.
+    this.holderLoader = new CachedLoader<HolderConcentration>({
+      ttlMs: options.holderCacheTtlMs ?? 60_000,
       clock: this.clock,
     });
   }
@@ -356,6 +428,35 @@ export class ResearchService {
       };
     }
 
+    // Holder concentration needs total supply, and supply comes from the mint
+    // account we just read. Without it the ratio would divide a chain number
+    // by a vendor number, so we simply do not attempt it.
+    let holders: HolderConcentration | null = null;
+    if (mintRead?.status === "found" && verification.status === "verified") {
+      const supply = mintRead.mint.supplyBaseUnits;
+      try {
+        const cached = await this.holderLoader.load(mint, () =>
+          readHolderConcentration(this.rpc, mint, supply, signal),
+        );
+        holders = cached.value;
+        verification = { ...verification, holders: describeHolders(holders) };
+      } catch (err) {
+        // Authorities stay verified; only this metric is missing. Public
+        // endpoints refuse getTokenLargestAccounts far more often than
+        // getAccountInfo, so this is the common path, not the rare one.
+        verification = {
+          ...verification,
+          holders: {
+            status: "unavailable",
+            detail:
+              err instanceof ArbError && err.code === "PROVIDER_RATE_LIMITED"
+                ? "Solana RPC rate limit reached; holder concentration was not measured on-chain."
+                : "Solana RPC could not be reached; holder concentration was not measured on-chain.",
+          },
+        };
+      }
+    }
+
     const verified = mintRead?.status === "found" ? mintRead.mint : null;
     const claim = token.providerClaims.mintAuthorityDisabled;
     const agreement: "agrees" | "disagrees" | "not_reported" =
@@ -388,7 +489,7 @@ export class ResearchService {
         source: verified ? SOLANA_MAINNET_SOURCE : token.source,
         providerAgreement: agreement,
       },
-      risk: assessRisk(token, mintRead),
+      risk: assessRisk(token, mintRead, holders),
       simulation: {
         available: simAvailable,
         reason: simAvailable

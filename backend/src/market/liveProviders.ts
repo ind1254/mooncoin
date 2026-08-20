@@ -1,5 +1,6 @@
 import { CachedLoader } from "./cache.js";
 import { createDemoBundle } from "./demoProviders.js";
+import type { HolderConcentration } from "./solana/holders.js";
 import type { MintReadResult } from "./solana/mint.js";
 import { OnChainMintRiskProvider } from "./solana/riskProvider.js";
 import { SolanaRpcClient, SOLANA_PUBLIC_MAINNET_RPC } from "./solana/rpc.js";
@@ -22,6 +23,12 @@ export interface LiveBundleOptions {
   rpcUrl?: string;
   /** Mint accounts change almost never; 10 minutes is comfortable. */
   mintCacheTtlMs?: number;
+  /**
+   * Holder balances move on every trade, so this cache is short. It also costs
+   * three RPC calls per miss against the mint cache's one, which is the other
+   * reason not to let it stampede.
+   */
+  holderCacheTtlMs?: number;
   /** Injected for offline integration tests; defaults to a real client. */
   client?: SolanaRpcClient;
 }
@@ -44,18 +51,25 @@ export function createLiveBundle(
     clock,
   });
 
+  const holderLoader = new CachedLoader<HolderConcentration>({
+    ttlMs: options.holderCacheTtlMs ?? 60_000,
+    clock,
+  });
+
   const riskFacts = new OnChainMintRiskProvider(
     demo.riskFacts,
     client,
     loader,
     async (mint) => (await demo.discovery.listTokens()).find((t) => t.mint === mint)?.decimals,
     clock,
+    holderLoader,
   );
 
   return {
     ...demo,
     riskFacts,
-    dataSourceLabel: "Live on-chain mint data (Solana mainnet) + simulated market data",
+    dataSourceLabel:
+      "Live on-chain mint and holder data (Solana mainnet) + simulated market data",
     isDemo: true,
   };
 }

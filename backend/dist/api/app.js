@@ -280,6 +280,31 @@ function hasDuplicateSymbols(results) {
 }
 const usdOrNull = (v) => (v === null ? null : microToUsdString(v));
 const pctOrNull = (v) => (v === null ? null : pctStr(v));
+/**
+ * Flattens the on-chain verification record for JSON.
+ *
+ * The holder figures are bigint basis points internally, and JSON.stringify
+ * throws outright on a BigInt — so passing this record through untouched would
+ * turn every research request into a 500. Basis points are bounded by 10_000,
+ * far inside Number's exact range, so widening them here loses nothing.
+ */
+function serializeVerification(v) {
+    const { holders, ...rest } = v;
+    if (!holders)
+        return { ...rest, holders: null };
+    const bps = (value) => value === undefined ? null : Number(value);
+    return {
+        ...rest,
+        holders: {
+            status: holders.status,
+            detail: holders.detail,
+            concentrationBps: bps(holders.concentrationBps),
+            programHeldBps: bps(holders.programHeldBps),
+            unclassifiedBps: bps(holders.unclassifiedBps),
+            walletHolderCount: holders.walletHolderCount ?? null,
+        },
+    };
+}
 function sumVolume(token, window) {
     const value = token[window];
     if (value.buyVolumeUsdMicro === null && value.sellVolumeUsdMicro === null)
@@ -464,7 +489,7 @@ function serializeProfile(p) {
             organicScoreLabel: p.market.organicScoreLabel,
             source: p.marketSource,
         },
-        verification: p.verification,
+        verification: serializeVerification(p.verification),
         authorities: p.authorities,
         risk: p.risk,
         simulation: p.simulation,

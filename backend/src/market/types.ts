@@ -89,6 +89,30 @@ export interface OnChainMintVerification {
   decimalsOnChain?: number;
   /** True when on-chain decimals disagree with the token catalog. */
   decimalsMismatch?: boolean;
+  /** Present only when holder classification was attempted. */
+  holders?: OnChainHolderVerification;
+}
+
+/**
+ * Outcome of measuring holder concentration from token accounts.
+ *
+ * Separate from the mint status above because the two can disagree: the mint
+ * account is one read that almost always succeeds, while holder classification
+ * is three reads and may be throttled. Authorities staying verified while
+ * holders go unavailable is a normal, expected combination.
+ */
+export interface OnChainHolderVerification {
+  status: "verified" | "incomplete" | "unavailable";
+  /** Top wallet holders' share of supply, bps. Excludes pools and curves. */
+  concentrationBps?: bigint;
+  /** Share held by program-controlled accounts (pools, curves), bps. */
+  programHeldBps?: bigint;
+  /** Distinct wallet owners behind `concentrationBps`. */
+  walletHolderCount?: number;
+  /** Share that could not be attributed to either bucket, bps. */
+  unclassifiedBps?: bigint;
+  /** Human-readable summary, always set. */
+  detail: string;
 }
 
 export interface TokenRiskFacts {

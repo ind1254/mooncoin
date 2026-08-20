@@ -1,4 +1,5 @@
 import { ArbError } from "../../core/errors.js";
+import { readHolderConcentration } from "./holders.js";
 import { readMintAccount } from "./mint.js";
 /**
  * Overlays on-chain mint facts onto another risk provider.
@@ -19,13 +20,21 @@ export class OnChainMintRiskProvider {
     loader;
     catalogDecimals;
     clock;
+    holderLoader;
     source;
-    constructor(base, client, loader, catalogDecimals, clock = Date.now) {
+    constructor(base, client, loader, catalogDecimals, clock = Date.now, 
+    /**
+     * Optional: supplying a loader turns on holder classification. Left out,
+     * holder concentration keeps whatever the base provider reported, which is
+     * what demo mode and the older tests expect.
+     */
+    holderLoader) {
         this.base = base;
         this.client = client;
         this.loader = loader;
         this.catalogDecimals = catalogDecimals;
         this.clock = clock;
+        this.holderLoader = holderLoader;
         this.source = `${base.source} + ${SOLANA_MAINNET_SOURCE}`;
     }
     async getRiskFacts(mint) {
@@ -92,6 +101,10 @@ export class OnChainMintRiskProvider {
                 fieldSources.mintAuthorityRevoked = SOLANA_MAINNET_SOURCE;
                 fieldSources.freezeAuthorityRevoked = SOLANA_MAINNET_SOURCE;
                 const declared = await this.catalogDecimals(mint);
+                // Supply comes from the mint we just read, so concentration is a ratio
+                // of two on-chain quantities rather than a chain number divided by a
+                // vendor number.
+                const holders = await this.verifyHolders(mint, result.mint.supplyBaseUnits, facts, fieldSources);
                 // Reported, deliberately not applied: quote math still uses the
                 // catalog's decimals, and changing one without the other would
                 // silently misscale every amount shown to the user.
@@ -100,6 +113,7 @@ export class OnChainMintRiskProvider {
                     status: "verified",
                     decimalsOnChain: result.mint.decimals,
                     ...(declared !== undefined ? { decimalsMismatch: declared !== result.mint.decimals } : {}),
+                    ...(holders !== undefined ? { holders } : {}),
                 };
             }
             case "not_found":
@@ -116,5 +130,53 @@ export class OnChainMintRiskProvider {
                 facts.dataComplete = false;
                 return { ...base, status: "malformed", detail: result.reason };
         }
+    }
+    /**
+     * Measures holder concentration on-chain and, when it succeeds, replaces the
+     * base provider's reported figure.
+     *
+     * Returns undefined when holder classification is switched off, so the
+     * verification record stays exactly as it was before this feature existed.
+     */
+    async verifyHolders(mint, supplyBaseUnits, facts, fieldSources) {
+        if (!this.holderLoader)
+            return undefined;
+        let concentration;
+        try {
+            const cached = await this.holderLoader.load(mint, () => readHolderConcentration(this.client, mint, supplyBaseUnits));
+            concentration = cached.value;
+        }
+        catch (err) {
+            // The authorities above are still verified; only this metric is missing.
+            // Leave the base provider's number in place and say where it came from.
+            facts.dataComplete = false;
+            return {
+                status: "unavailable",
+                detail: err instanceof ArbError && err.code === "PROVIDER_RATE_LIMITED"
+                    ? "Solana RPC rate limit reached; holder concentration was not measured on-chain."
+                    : "Solana RPC unavailable; holder concentration was not measured on-chain.",
+            };
+        }
+        // Applied even when incomplete: a floor measured from real wallets beats a
+        // figure that silently counts pool vaults as holders. The shortfall is
+        // reported rather than hidden.
+        facts.holderConcentrationBps = concentration.concentrationBps;
+        fieldSources.holderConcentrationBps = SOLANA_MAINNET_SOURCE;
+        if (!concentration.complete)
+            facts.dataComplete = false;
+        const percent = (bps) => (Number(bps) / 100).toFixed(1);
+        const poolNote = concentration.programHeldBps > 0n
+            ? ` A further ${percent(concentration.programHeldBps)}% sits in program-controlled accounts such as pools or bonding curves, which is tradable supply rather than a holder.`
+            : "";
+        return {
+            status: concentration.complete ? "verified" : "incomplete",
+            concentrationBps: concentration.concentrationBps,
+            programHeldBps: concentration.programHeldBps,
+            walletHolderCount: concentration.walletHolderCount,
+            unclassifiedBps: concentration.unclassifiedBps,
+            detail: concentration.complete
+                ? `Top ${concentration.walletHolderCount} wallet holders control ${percent(concentration.concentrationBps)}% of supply.${poolNote}`
+                : `Top ${concentration.walletHolderCount} wallet holders control at least ${percent(concentration.concentrationBps)}% of supply; ${percent(concentration.unclassifiedBps)}% could not be attributed to a wallet or a program.${poolNote}`,
+        };
     }
 }

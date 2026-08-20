@@ -13,11 +13,15 @@ export function createLiveBundle(clock = Date.now, options = {}) {
         ttlMs: options.mintCacheTtlMs ?? 600_000,
         clock,
     });
-    const riskFacts = new OnChainMintRiskProvider(demo.riskFacts, client, loader, async (mint) => (await demo.discovery.listTokens()).find((t) => t.mint === mint)?.decimals, clock);
+    const holderLoader = new CachedLoader({
+        ttlMs: options.holderCacheTtlMs ?? 60_000,
+        clock,
+    });
+    const riskFacts = new OnChainMintRiskProvider(demo.riskFacts, client, loader, async (mint) => (await demo.discovery.listTokens()).find((t) => t.mint === mint)?.decimals, clock, holderLoader);
     return {
         ...demo,
         riskFacts,
-        dataSourceLabel: "Live on-chain mint data (Solana mainnet) + simulated market data",
+        dataSourceLabel: "Live on-chain mint and holder data (Solana mainnet) + simulated market data",
         isDemo: true,
     };
 }

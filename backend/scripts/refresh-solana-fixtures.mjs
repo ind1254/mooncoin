@@ -72,4 +72,19 @@ for (const [name, address, note] of ACCOUNTS) {
 // This also settles a question for a later step: holder concentration needs
 // exactly this method, so that field is not viable on the public endpoint and
 // will require a keyed provider.
+//
+// UPDATE — holder concentration is now implemented (market/solana/holders.ts),
+// and the prediction above held. Against api.mainnet-beta.solana.com the
+// method still answers HTTP 200 with a JSON-RPC 429 body, so the feature
+// degrades to "holders: unavailable" on the default endpoint and the research
+// page keeps showing Jupiter's reported figure. Point SOLANA_RPC_URL at a
+// keyed provider (Helius / QuickNode / Triton) to switch it on; nothing else
+// needs to change.
+//
+// If you do have a keyed endpoint, this is the shape worth recording:
+//   SOLANA_RPC_URL=https://... node scripts/refresh-solana-fixtures.mjs
+// then add a getTokenLargestAccounts capture plus one getMultipleAccounts
+// capture of the token accounts it names, so the decoder gains a real-bytes
+// case alongside the constructed ones.
 console.log("token-account: skipped (getTokenLargestAccounts is rate-limited on the public endpoint)");
+console.log("holder concentration: needs a keyed SOLANA_RPC_URL; degrades to unavailable otherwise");

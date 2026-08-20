@@ -246,3 +246,167 @@ describe("research API", () => {
     s.close();
   });
 });
+
+// ---------------------------------------------------------------------------
+// On-chain holder concentration, through the HTTP boundary
+// ---------------------------------------------------------------------------
+
+/**
+ * These go over real HTTP rather than calling the service directly, and that
+ * is the entire point of them.
+ *
+ * The holder figures are bigint basis points, and JSON.stringify throws on a
+ * BigInt. A service-level test would pass happily while every research request
+ * in production returned 500 — which is exactly the failure mode this repo has
+ * already shipped once (see the note in api/index.js). Only a test that
+ * actually serializes a response can catch it.
+ */
+
+/** RPC transport that answers each method with its own canned body. */
+function holderRpc(overrides: { largestStatus?: number } = {}): SolanaRpcClient {
+  // Two token accounts: one owned by a program (a pool), one by a wallet.
+  const POOL_TA = "So11111111111111111111111111111111111111112";
+  const WALLET_TA = "SysvarC1ock11111111111111111111111111111111";
+  const POOL_OWNER = "SysvarRent111111111111111111111111111111111";
+  const WALLET_OWNER = "SysvarRecentB1ockHashes11111111111111111111";
+  const SPL_TOKEN = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+  const SYSTEM = "11111111111111111111111111111111";
+
+  const b58 = (address: string): Uint8Array => {
+    // Only the round trip matters here: the decoder re-encodes whatever bytes
+    // we write, so any injective mapping gives a stable, distinct pubkey.
+    const bytes = new Uint8Array(32);
+    for (let i = 0; i < address.length && i < 32; i += 1) bytes[i] = address.charCodeAt(i) & 0xff;
+    return bytes;
+  };
+
+  const tokenAccount = (ownerAddress: string, amount: bigint): string => {
+    const data = new Uint8Array(165);
+    data.set(b58(BONK), 0);
+    data.set(b58(ownerAddress), 32);
+    new DataView(data.buffer, data.byteOffset, data.byteLength).setBigUint64(64, amount, true);
+    data[108] = 1;
+    return Buffer.from(data).toString("base64");
+  };
+
+  const account = (dataB64: string, programOwner: string) => ({
+    data: [dataB64, "base64"],
+    owner: programOwner,
+    lamports: 2_039_280,
+    executable: false,
+  });
+
+  // The mint fixture BONK reports; its supply is what concentration divides by.
+  const bonkSupply = 0n;
+
+  return new SolanaRpcClient({
+    fetchImpl: async (_url, init) => {
+      const body = JSON.parse(String(init?.body)) as { method: string; params: unknown[] };
+
+      if (body.method === "getAccountInfo") {
+        return new Response(JSON.stringify(solFixture("bonk-mint")), { status: 200 });
+      }
+
+      if (body.method === "getTokenLargestAccounts") {
+        if (overrides.largestStatus) return new Response("{}", { status: overrides.largestStatus });
+        return new Response(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            result: {
+              context: { slot: 1 },
+              value: [
+                { address: POOL_TA, amount: "600" },
+                { address: WALLET_TA, amount: "300" },
+              ],
+            },
+          }),
+          { status: 200 },
+        );
+      }
+
+      const addresses = body.params[0] as string[];
+      const table: Record<string, unknown> = {
+        [POOL_TA]: account(tokenAccount(POOL_OWNER, 600n), SPL_TOKEN),
+        [WALLET_TA]: account(tokenAccount(WALLET_OWNER, 300n), SPL_TOKEN),
+        [POOL_OWNER]: account("", SPL_TOKEN), // program-owned => a pool
+        [WALLET_OWNER]: account("", SYSTEM), // System Program => a wallet
+      };
+      void bonkSupply;
+      return new Response(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          result: { context: { slot: 1 }, value: addresses.map((a) => table[a] ?? null) },
+        }),
+        { status: 200 },
+      );
+    },
+  });
+}
+
+async function researchOver(rpc: SolanaRpcClient): Promise<{ status: number; body: any }> {
+  const deps = createTestDeps(() => START);
+  const discovery = new JupiterTokenSearchProvider({
+    clock: () => START,
+    fetchImpl: async () => new Response(JSON.stringify(jupFixture("search-bonk")), { status: 200 }),
+  });
+  deps.research = new ResearchService(discovery, rpc, { clock: () => START });
+
+  const app = createApp(deps);
+  const s = app.listen(0);
+  try {
+    const addr = s.address();
+    const url = typeof addr === "object" && addr ? `http://127.0.0.1:${addr.port}` : "";
+    const res = await fetch(`${url}/v1/research/${BONK}`);
+    return { status: res.status, body: await res.json() };
+  } finally {
+    s.close();
+  }
+}
+
+describe("research API — holder concentration serialization", () => {
+  it("returns 200 with numeric basis points rather than failing on a BigInt", async () => {
+    const { status, body } = await researchOver(holderRpc());
+
+    expect(status).toBe(200);
+    const holders = body.verification.holders;
+    expect(holders).not.toBeNull();
+    expect(holders.status).not.toBe("unavailable");
+    // Numbers, not bigints and not strings — the UI does arithmetic on these.
+    expect(typeof holders.concentrationBps).toBe("number");
+    expect(typeof holders.programHeldBps).toBe("number");
+    expect(typeof holders.unclassifiedBps).toBe("number");
+  });
+
+  it("survives a whole-response JSON round trip", async () => {
+    const { status, body } = await researchOver(holderRpc());
+    // The status assertion is load-bearing: a 500 body contains no bigints, so
+    // without it this test would pass on exactly the failure it exists to catch.
+    expect(status).toBe(200);
+    expect(() => JSON.stringify(body)).not.toThrow();
+  });
+
+  it("keeps authorities verified when holder classification is rate limited", async () => {
+    const { status, body } = await researchOver(holderRpc({ largestStatus: 429 }));
+
+    expect(status).toBe(200);
+    expect(body.verification.status).toBe("verified");
+    expect(body.authorities.mintAuthorityRevoked).toBe(true);
+    expect(body.verification.holders.status).toBe("unavailable");
+    expect(body.verification.holders.concentrationBps).toBeNull();
+  });
+
+  it("reports null holders when the feature never ran", async () => {
+    // The default harness answers every method with the mint fixture, so the
+    // largest-accounts call fails its schema and holders stay absent.
+    const { status, body } = await researchOver(
+      new SolanaRpcClient({
+        fetchImpl: async () => new Response(JSON.stringify(solFixture("bonk-mint")), { status: 200 }),
+      }),
+    );
+
+    expect(status).toBe(200);
+    expect(body.verification.holders.status).toBe("unavailable");
+  });
+});

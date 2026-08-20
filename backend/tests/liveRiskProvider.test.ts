@@ -259,3 +259,94 @@ describe("mode selection", () => {
     expect(live.isDemo).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Holder concentration overlay
+// ---------------------------------------------------------------------------
+
+/**
+ * The mint read and the holder read are independent failures, and the
+ * combination that matters in production is "authorities verified, holders
+ * throttled" — public endpoints refuse getTokenLargestAccounts far more often
+ * than they refuse getAccountInfo.
+ */
+
+function holderHarness(handlers: {
+  largest?: () => Response;
+  multiple?: () => Response;
+}): OnChainMintRiskProvider {
+  const clock = () => START;
+  const client = new SolanaRpcClient({
+    fetchImpl: async (_url, init) => {
+      const { method } = JSON.parse(String(init?.body)) as { method: string };
+      if (method === "getAccountInfo") {
+        return new Response(JSON.stringify(fixtureBody("bonk-mint")), { status: 200 });
+      }
+      if (method === "getTokenLargestAccounts") {
+        return handlers.largest?.() ?? new Response("{}", { status: 429 });
+      }
+      return (
+        handlers.multiple?.() ??
+        new Response(
+          JSON.stringify({ jsonrpc: "2.0", id: 1, result: { context: { slot: 1 }, value: [] } }),
+          { status: 200 },
+        )
+      );
+    },
+  });
+
+  return new OnChainMintRiskProvider(
+    new StubRiskProvider(),
+    client,
+    new CachedLoader<MintReadResult>({ ttlMs: 600_000, clock }),
+    async () => 5,
+    clock,
+    new CachedLoader({ ttlMs: 60_000, clock }),
+  );
+}
+
+const emptyLargest = () =>
+  new Response(
+    JSON.stringify({ jsonrpc: "2.0", id: 1, result: { context: { slot: 1 }, value: [] } }),
+    { status: 200 },
+  );
+
+describe("live overlay — holder concentration", () => {
+  it("keeps authorities verified when holder classification is rate limited", async () => {
+    const provider = holderHarness({ largest: () => new Response("{}", { status: 429 }) });
+    const point = await provider.getRiskFacts(BONK);
+
+    // The authorities came from the mint account and are unaffected.
+    expect(point.value.mintAuthorityRevoked).toBe(true);
+    expect(point.value.onChainVerification?.status).toBe("verified");
+
+    // The holder metric is not: it keeps the base provider's number, says so,
+    // and drops dataComplete rather than passing a vendor figure off as chain.
+    expect(point.value.holderConcentrationBps).toBe(1_500n);
+    expect(point.fieldSources?.holderConcentrationBps).toBe(BASE_SOURCE);
+    expect(point.value.onChainVerification?.holders?.status).toBe("unavailable");
+    expect(point.value.dataComplete).toBe(false);
+  });
+
+  it("attributes concentration to the chain once measured", async () => {
+    const provider = holderHarness({ largest: emptyLargest });
+    const point = await provider.getRiskFacts(BONK);
+
+    // A mint with no funded token accounts is 0% concentrated, and that is a
+    // measurement rather than a fallback.
+    expect(point.value.holderConcentrationBps).toBe(0n);
+    expect(point.fieldSources?.holderConcentrationBps).toBe(SOLANA_MAINNET_SOURCE);
+    expect(point.value.onChainVerification?.holders?.status).toBe("verified");
+    expect(point.value.dataComplete).toBe(true);
+  });
+
+  it("leaves the verification record untouched when holders are switched off", async () => {
+    // The five-argument constructor is still the demo-mode shape.
+    const h = harness(ok("bonk-mint"));
+    const point = await h.provider.getRiskFacts(BONK);
+
+    expect(point.value.onChainVerification?.status).toBe("verified");
+    expect(point.value.onChainVerification?.holders).toBeUndefined();
+    expect(point.fieldSources?.holderConcentrationBps).toBe(BASE_SOURCE);
+  });
+});
