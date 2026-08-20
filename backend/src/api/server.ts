@@ -6,6 +6,25 @@ import { createApp, createDefaultDeps, initPersistence, runNotificationTick, see
  * Paper trading only: no execution path exists anywhere in this process.
  */
 
+/**
+ * Local development only: load backend/.env if it exists.
+ *
+ * Node's built-in loader, so no dotenv dependency. This exists so secrets like
+ * SOLANA_RPC_URL live in a gitignored file instead of being retyped on every
+ * command — which is how keys end up pasted into shell history, chat windows,
+ * and eventually commits.
+ *
+ * Absent file is the normal case, not an error: Vercel injects environment
+ * variables directly and never runs this entry point (see api/index.js).
+ * Real environment variables always win, because loadEnvFile does not
+ * overwrite values that are already set.
+ */
+try {
+  process.loadEnvFile();
+} catch {
+  // No .env present. Expected in CI and in production.
+}
+
 // `--live` works in any shell, unlike inline env vars on Windows.
 if (process.argv.includes("--live")) process.env.MARKET_MODE = "live";
 
