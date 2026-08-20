@@ -340,6 +340,42 @@ export interface ResearchServiceOptions {
   clock?: () => number;
 }
 
+/**
+ * Names why holder concentration is missing, in terms an operator can act on.
+ *
+ * Each of these has a different fix — raise the cache TTL, check the endpoint,
+ * or look at what the provider actually returned — so collapsing them into one
+ * sentence turns a five-minute diagnosis into guesswork.
+ */
+function describeHolderFailure(err: unknown): string {
+  const tail = "holder concentration was not measured on-chain.";
+  if (!(err instanceof ArbError)) return `Unexpected error; ${tail}`;
+
+  switch (err.code) {
+    case "PROVIDER_RATE_LIMITED":
+      return `Solana RPC rate limit reached; ${tail}`;
+    case "PROVIDER_TIMEOUT":
+      return `Solana RPC timed out; ${tail}`;
+    case "MALFORMED_PROVIDER_RESPONSE":
+      // Usually a provider that answers the method but with a different shape,
+      // or one that refuses it inside a 200 response.
+      return `Solana RPC returned an unrecognized response; ${tail}`;
+    case "PROVIDER_ERROR": {
+      const status = err.details?.httpStatus;
+      const rpcCode = err.details?.rpcCode;
+      if (typeof rpcCode === "number") {
+        return `Solana RPC rejected the request (code ${rpcCode}); ${tail}`;
+      }
+      if (typeof status === "number") {
+        return `Solana RPC returned HTTP ${status}; ${tail}`;
+      }
+      return `Solana RPC could not be reached; ${tail}`;
+    }
+    default:
+      return `Solana RPC unavailable (${err.code}); ${tail}`;
+  }
+}
+
 /** Turns a holder measurement into the record the API and UI display. */
 function describeHolders(holders: HolderConcentration): OnChainHolderVerification {
   const pct = (bps: bigint): string => bpsToPct(bps).toFixed(1);
@@ -444,16 +480,29 @@ export class ResearchService {
         // Authorities stay verified; only this metric is missing. Public
         // endpoints refuse getTokenLargestAccounts far more often than
         // getAccountInfo, so this is the common path, not the rare one.
+        //
+        // The distinct causes are named rather than collapsed into "could not
+        // be reached": a throttled endpoint, an unreachable one, and one that
+        // answered in a shape we do not recognise need completely different
+        // fixes, and a single vague message makes them indistinguishable from
+        // outside the process.
         verification = {
           ...verification,
-          holders: {
-            status: "unavailable",
-            detail:
-              err instanceof ArbError && err.code === "PROVIDER_RATE_LIMITED"
-                ? "Solana RPC rate limit reached; holder concentration was not measured on-chain."
-                : "Solana RPC could not be reached; holder concentration was not measured on-chain.",
-          },
+          holders: { status: "unavailable", detail: describeHolderFailure(err) },
         };
+
+        // Structured line so the cause is visible in production logs. The
+        // endpoint URL is never included — it carries the API key.
+        console.warn(
+          JSON.stringify({
+            ts: new Date(this.clock()).toISOString(),
+            msg: "on-chain holder concentration unavailable",
+            mint,
+            code: err instanceof ArbError ? err.code : "UNKNOWN",
+            httpStatus: err instanceof ArbError ? err.details?.httpStatus : undefined,
+            rpcCode: err instanceof ArbError ? err.details?.rpcCode : undefined,
+          }),
+        );
       }
     }
 

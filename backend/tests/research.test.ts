@@ -397,6 +397,20 @@ describe("research API — holder concentration serialization", () => {
     expect(body.verification.holders.concentrationBps).toBeNull();
   });
 
+  it("names the cause instead of collapsing every failure into one message", async () => {
+    // A throttled endpoint, a broken one, and one answering in an unexpected
+    // shape need different fixes. Identical copy for all three is what turns a
+    // five-minute diagnosis into guesswork.
+    const throttled = await researchOver(holderRpc({ largestStatus: 429 }));
+    const broken = await researchOver(holderRpc({ largestStatus: 500 }));
+
+    expect(throttled.body.verification.holders.detail).toMatch(/rate limit/i);
+    expect(broken.body.verification.holders.detail).toMatch(/HTTP 500/);
+    expect(throttled.body.verification.holders.detail).not.toBe(
+      broken.body.verification.holders.detail,
+    );
+  });
+
   it("reports null holders when the feature never ran", async () => {
     // The default harness answers every method with the mint fixture, so the
     // largest-accounts call fails its schema and holders stay absent.
