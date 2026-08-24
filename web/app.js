@@ -106,7 +106,7 @@
     if (h.startsWith("reset-password/")) return { name: "reset-password", token: h.slice(15) };
     if (h.startsWith("research/")) return { name: "research", mint: h.slice(9) };
     if (h.startsWith("token/")) return { name: "token", mint: h.slice(6) };
-    if (h === "portfolio" || h === "settings" || h === "watchlist" || h === "simulator") return { name: h };
+    if (h === "portfolio" || h === "bot" || h === "settings" || h === "watchlist" || h === "simulator") return { name: h };
     return { name: "discover" };
   }
 
@@ -1689,7 +1689,7 @@
       return `<div class="card pos-card live-paper-position" data-paper-id="${esc(position.id)}">
         <div class="pos-head">
           <span class="sym">${esc(position.token.symbol)}</span>
-          <span class="chip ${open ? "live-chip" : ""}">${open ? "OPEN" : "CLOSED"} · LIVE-QUOTE PAPER</span>
+          <span class="chip ${open ? "live-chip" : ""}">${open ? "OPEN" : "CLOSED"} · ${position.managedByPaperBot ? "SHADOW BOT" : "LIVE-QUOTE PAPER"}</span>
           <span class="tiny faint">${open ? "opened" : "closed"} ${ago(open ? position.openedAtMs : position.closedAtMs)}</span>
           <span style="margin-left:auto" class="pnl mono ${position.pnlUsd === null ? "muted" : cls(position.pnlUsd)}">${pnl(position.pnlUsd)}${position.returnPct === null ? "" : ` <span class="small">(${sign(position.returnPct)}${esc(position.returnPct)}%)</span>`}</span>
         </div>
@@ -1748,6 +1748,163 @@
       const close = card.querySelector(".live-paper-close");
       if (close) close.addEventListener("click", () => openLivePaperCloseModal(position));
     });
+  }
+
+  // ---------- Bot Lab (opt-in shadow paper bot) ----------
+  async function renderBot(container) {
+    if (!session.authenticated) {
+      container.innerHTML = signInPrompt("the paper bot lab");
+      return wireSignInPrompt;
+    }
+    const body = await api("/v1/me/paper-bot?limit=40");
+    const c = body.config;
+    const pct = (bps) => Number(bps) / 100;
+    const runStatus = c.lastRunStatus ?? "waiting";
+    const decisionLabel = {
+      opened: "Opened paper position",
+      entry_rejected: "Entry rejected",
+      closed: "Closed paper position",
+      exit_unavailable: "Exit quote unavailable",
+      scan_empty: "No qualifying candidate",
+      error: "Worker error",
+    };
+    const decisionClass = (action) =>
+      action === "opened" || action === "closed"
+        ? "ok"
+        : action === "entry_rejected" || action === "scan_empty"
+          ? "warn"
+          : "error";
+    const decisionHtml = (d) => `
+      <div class="bot-decision">
+        <div class="row spread" style="align-items:flex-start;flex-wrap:wrap">
+          <div>
+            <span class="chip bot-${decisionClass(d.action)}">${esc(decisionLabel[d.action] ?? d.action)}</span>
+            ${d.tokenSymbol ? `<b style="margin-left:7px">${esc(d.tokenSymbol)}</b>` : ""}
+          </div>
+          <span class="tiny faint">${ago(d.createdAtMs)}</span>
+        </div>
+        <div class="small muted" style="margin-top:8px">${esc(d.reason)}</div>
+        ${d.qualityScore === null && d.riskScore === null ? "" : `<div class="tiny faint" style="margin-top:6px">Quality ${d.qualityScore ?? "—"}/100 · risk ${d.riskScore ?? "—"}/100</div>`}
+        ${d.tokenMint ? `<button class="back bot-research" data-mint="${esc(d.tokenMint)}" style="margin-top:7px">Research mint →</button>` : ""}
+      </div>`;
+
+    container.innerHTML = `
+      <div class="bot-hero card">
+        <div>
+          <div class="eyebrow">AUTOMATED PAPER TRADING</div>
+          <h2 style="margin-top:5px">Shadow Bot Lab</h2>
+          <p class="small muted" style="max-width:680px;margin-top:6px">Scans Jupiter's five-minute trending feed, reruns Moonpaper's on-chain and exact-quote production gates, then opens and manages virtual positions. Every decision is recorded below.</p>
+        </div>
+        <div class="bot-status ${c.enabled ? "enabled" : "disabled"}">
+          <i></i>${c.enabled ? "ENABLED" : "OFF"}
+        </div>
+      </div>
+      <div class="sim-notice" style="margin:12px 0 16px"><b>Simulation only.</b> This bot cannot access a wallet, build a transaction, sign, submit, or move funds. Enabling it authorizes only automatic changes to your virtual Moonpaper portfolio.</div>
+
+      <div class="detail-grid bot-layout">
+        <div class="card">
+          <div class="row spread" style="margin-bottom:13px;flex-wrap:wrap">
+            <h3>Strategy controls</h3>
+            <label class="bot-toggle"><input type="checkbox" id="botEnabled" ${c.enabled ? "checked" : ""}> Run shadow bot</label>
+          </div>
+          <div class="bot-fields">
+            <div><label class="field">VIRTUAL USD PER ENTRY</label><input type="number" id="botTradeSize" min="10" max="10000" step="10" value="${esc(c.tradeSizeUsd)}"></div>
+            <div><label class="field">MAX OPEN BOT POSITIONS</label><input type="number" id="botMaxOpen" min="1" max="10" step="1" value="${c.maxOpenPositions}"></div>
+            <div><label class="field">MIN QUALITY SCORE</label><input type="number" id="botMinQuality" min="0" max="100" step="1" value="${c.minQualityScore}"></div>
+            <div><label class="field">MAX RISK SCORE</label><input type="number" id="botMaxRisk" min="0" max="100" step="1" value="${c.maxRiskScore}"></div>
+            <div><label class="field">MIN LIQUIDITY (USD)</label><input type="number" id="botMinLiquidity" min="10000" max="1000000000" step="10000" value="${esc(c.minLiquidityUsd)}"></div>
+            <div><label class="field">MAX ENTRY IMPACT (%)</label><input type="number" id="botMaxImpact" min="0.01" max="3" step="0.01" value="${pct(c.maxPriceImpactBps)}"></div>
+            <div><label class="field">SLIPPAGE ASSUMPTION (%)</label><input type="number" id="botSlippage" min="0.01" max="5" step="0.01" value="${pct(c.slippageBps)}"></div>
+            <div><label class="field">TAKE PROFIT (%)</label><input type="number" id="botTakeProfit" min="1" max="100" step="0.5" value="${pct(c.takeProfitBps)}"></div>
+            <div><label class="field">STOP LOSS (%)</label><input type="number" id="botStopLoss" min="1" max="50" step="0.5" value="${pct(c.stopLossBps)}"></div>
+            <div><label class="field">TRAILING STOP (%) · 0 OFF</label><input type="number" id="botTrailing" min="0" max="50" step="0.5" value="${pct(c.trailingStopBps)}"></div>
+            <div><label class="field">MAX HOLD (MINUTES)</label><input type="number" id="botMaxHold" min="5" max="10080" step="5" value="${c.maxHoldMinutes}"></div>
+            <div><label class="field">RE-ENTRY COOLDOWN (MINUTES)</label><input type="number" id="botCooldown" min="1" max="1440" step="1" value="${c.cooldownMinutes}"></div>
+          </div>
+          <button class="btn" id="saveBot" style="width:100%;margin-top:16px">Save shadow strategy</button>
+          <div class="tiny faint" style="margin-top:8px">Version ${esc(c.strategyVersion)} · defaults are experimental test parameters, not financial advice.</div>
+        </div>
+
+        <div class="grid">
+          <div class="card">
+            <h3>Worker status</h3>
+            <div class="kv"><span class="k">State</span><span class="v"><span class="chip bot-${runStatus === "ok" ? "ok" : runStatus === "waiting" ? "warn" : "error"}">${esc(runStatus.toUpperCase())}</span></span></div>
+            <div class="kv"><span class="k">Last evaluated</span><span class="v">${c.lastRunAtMs ? ago(c.lastRunAtMs) : "Not yet"}</span></div>
+            <div class="small muted" style="margin-top:10px">${esc(c.lastRunSummary ?? (c.enabled ? "Waiting for the background worker's first pass." : "Enable the bot to start simulated scans."))}</div>
+          </div>
+          <div class="card">
+            <h3>What must pass before entry</h3>
+            <ul class="bot-checks">
+              <li>Fresh five-minute trending data and configured quality score</li>
+              <li>Configured liquidity and risk ceilings</li>
+              <li>Solana mint and freeze authorities verified as revoked</li>
+              <li>Fresh exact-size Jupiter route within impact policy</li>
+              <li>Virtual cash, cooldown, and position limits</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      <div class="row spread" style="margin:22px 0 10px;flex-wrap:wrap">
+        <h3>Decision audit trail</h3>
+        <span class="tiny muted">Newest first · accepted and rejected decisions</span>
+      </div>
+      <div class="bot-decisions">${body.decisions.length ? body.decisions.map(decisionHtml).join("") : `<div class="empty">No bot decisions yet. The first worker pass will appear here after you enable the shadow bot.</div>`}</div>
+    `;
+
+    const strategyPayload = () => ({
+      enabled: $("botEnabled").checked,
+      tradeSizeUsd: $("botTradeSize").value,
+      minQualityScore: Number($("botMinQuality").value),
+      maxRiskScore: Number($("botMaxRisk").value),
+      minLiquidityUsd: $("botMinLiquidity").value,
+      maxPriceImpactBps: Math.round(Number($("botMaxImpact").value) * 100),
+      slippageBps: Math.round(Number($("botSlippage").value) * 100),
+      maxOpenPositions: Number($("botMaxOpen").value),
+      takeProfitBps: Math.round(Number($("botTakeProfit").value) * 100),
+      stopLossBps: Math.round(Number($("botStopLoss").value) * 100),
+      trailingStopBps: Math.round(Number($("botTrailing").value) * 100),
+      maxHoldMinutes: Number($("botMaxHold").value),
+      cooldownMinutes: Number($("botCooldown").value),
+    });
+    const persist = async (payload) => {
+      const save = $("saveBot");
+      save.disabled = true;
+      save.textContent = "Saving…";
+      try {
+        await put("/v1/me/paper-bot", payload);
+        toast(payload.enabled ? "Shadow bot enabled — simulation only" : "Shadow bot settings saved", "ok");
+        render();
+      } catch (err) {
+        toast(err.message, "error");
+        save.disabled = false;
+        save.textContent = "Save shadow strategy";
+      }
+    };
+    container.querySelector("#saveBot").addEventListener("click", () => {
+      const payload = strategyPayload();
+      if (payload.enabled && !c.enabled) {
+        showModal(`
+          <h3>Enable automatic paper trading?</h3>
+          <div class="sim-notice">This authorizes Moonpaper's background worker to open and close <b>virtual</b> positions under these limits. It does not authorize real trading and cannot access a wallet.</div>
+          <div class="kv"><span class="k">Virtual entry size</span><span class="v mono">$${esc(payload.tradeSizeUsd)}</span></div>
+          <div class="kv"><span class="k">Maximum bot positions</span><span class="v mono">${payload.maxOpenPositions}</span></div>
+          <div class="kv"><span class="k">Stop / target</span><span class="v mono">-${payload.stopLossBps / 100}% / +${payload.takeProfitBps / 100}%</span></div>
+          <div class="actions"><button class="btn secondary" data-close>Cancel</button><button class="btn" id="confirmBotEnable">Enable shadow bot</button></div>
+        `);
+        $("confirmBotEnable").addEventListener("click", () => {
+          closeModal();
+          persist(payload);
+        });
+      } else {
+        persist(payload);
+      }
+    });
+    container.querySelectorAll(".bot-research").forEach((button) =>
+      button.addEventListener("click", () => {
+        location.hash = `#/research/${button.dataset.mint}`;
+      }),
+    );
   }
 
   // ---------- Watchlist ----------
@@ -2142,6 +2299,7 @@
       else if (state.route.name === "research") after = await renderResearch(target, state.route.mint);
       else if (state.route.name === "token") after = await renderToken(target, state.route.mint);
       else if (state.route.name === "portfolio") after = await renderAccountPortfolio(target);
+      else if (state.route.name === "bot") after = await renderBot(target);
       else if (state.route.name === "watchlist") after = await renderWatchlist(target);
       else if (state.route.name === "simulator") after = await renderPortfolio(target);
       else if (state.route.name === "settings") after = await renderSettings(target);
@@ -2223,7 +2381,12 @@
       const el = document.activeElement;
       const typing = el && (el.tagName === "INPUT" || el.tagName === "SELECT" || el.tagName === "TEXTAREA");
       const busy =
-        state.modalOpen || typing || search.open || state.route.name === "settings" || state.route.name === "research";
+        state.modalOpen ||
+        typing ||
+        search.open ||
+        state.route.name === "settings" ||
+        state.route.name === "bot" ||
+        state.route.name === "research";
       if (!busy) render();
       refreshNotifications();
     }

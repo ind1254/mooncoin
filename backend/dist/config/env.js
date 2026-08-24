@@ -61,6 +61,8 @@ const envSchema = z.object({
     PAPER_RATE_LIMIT_ATTEMPTS: z.coerce.number().int().min(1).max(10_000).default(30),
     /** Fixed paper-write rate-limit window. */
     PAPER_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().min(1_000).max(3_600_000).default(60_000),
+    /** Long-running alert and paper-bot worker cadence. */
+    ALERT_INTERVAL_MS: z.coerce.number().int().min(15_000).max(3_600_000).default(60_000),
     /** How long a signed-in session lasts. */
     SESSION_TTL_DAYS: z.coerce.number().int().min(1).max(365).default(30),
     /** Public, canonical origin used in emailed links. Never inferred from Host. */

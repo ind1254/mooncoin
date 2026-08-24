@@ -1,8 +1,9 @@
 import express from "express";
 import { z } from "zod";
 import { asArbError, ArbError } from "../core/errors.js";
+import { decimalToBaseUnits, microToUsdString } from "../core/money.js";
 import { credentialsSchema } from "../auth/authService.js";
-import { PortfolioRepository, RateLimitRepository, WatchlistRepository, } from "../db/repositories.js";
+import { PortfolioRepository, PaperBotConfigRepository, PaperBotDecisionRepository, RateLimitRepository, WatchlistRepository, } from "../db/repositories.js";
 /**
  * Identity and per-user state.
  *
@@ -160,6 +161,42 @@ export function createAuthRouter(options) {
         }
         next();
     };
+    const serializeBotConfig = (config) => ({
+        id: config.id,
+        enabled: config.enabled,
+        simulated: true,
+        executionEnabled: false,
+        strategyVersion: config.strategyVersion,
+        tradeSizeUsd: microToUsdString(config.tradeSizeMicroUsd),
+        minQualityScore: config.minQualityScore,
+        maxRiskScore: config.maxRiskScore,
+        minLiquidityUsd: microToUsdString(config.minLiquidityMicroUsd),
+        maxPriceImpactBps: Number(config.maxPriceImpactBps),
+        slippageBps: Number(config.slippageBps),
+        maxOpenPositions: config.maxOpenPositions,
+        takeProfitBps: Number(config.takeProfitBps),
+        stopLossBps: Number(config.stopLossBps),
+        trailingStopBps: Number(config.trailingStopBps),
+        maxHoldMinutes: config.maxHoldMinutes,
+        cooldownMinutes: config.cooldownMinutes,
+        lastRunAtMs: config.lastRunAtMs,
+        lastRunStatus: config.lastRunStatus,
+        lastRunSummary: config.lastRunSummary,
+        createdAtMs: config.createdAtMs,
+        updatedAtMs: config.updatedAtMs,
+    });
+    const serializeBotDecision = (decision) => ({
+        id: decision.id,
+        positionId: decision.positionId,
+        tokenMint: decision.tokenMint,
+        tokenSymbol: decision.tokenSymbol,
+        action: decision.action,
+        qualityScore: decision.qualityScore,
+        riskScore: decision.riskScore,
+        reason: decision.reason,
+        snapshot: decision.snapshot,
+        createdAtMs: decision.createdAtMs,
+    });
     // ---- Identity ----
     router.post("/v1/auth/signup", requirePersistence, async (req, res) => {
         try {
@@ -342,6 +379,95 @@ export function createAuthRouter(options) {
         try {
             const user = currentUser(res);
             res.json({ portfolio: await paperTrading().getPortfolio(user.id) });
+        }
+        catch (err) {
+            fail(res, err);
+        }
+    });
+    const moneyInput = z.union([z.string().min(1).max(32), z.number().finite()]).transform(String);
+    const parseMicroUsd = (value, label) => {
+        if (!/^\d+(?:\.\d{1,2})?$/.test(value.trim())) {
+            throw new ArbError("VALIDATION_ERROR", `${label} must use at most two decimal places.`, 400);
+        }
+        try {
+            return decimalToBaseUnits(value, 6);
+        }
+        catch {
+            throw new ArbError("VALIDATION_ERROR", `${label} is invalid.`, 400);
+        }
+    };
+    const botConfigSchema = z.object({
+        enabled: z.boolean(),
+        tradeSizeUsd: moneyInput,
+        minQualityScore: z.coerce.number().int().min(0).max(100),
+        maxRiskScore: z.coerce.number().int().min(0).max(100),
+        minLiquidityUsd: moneyInput,
+        maxPriceImpactBps: z.coerce.number().int().min(1).max(300),
+        slippageBps: z.coerce.number().int().min(1).max(500),
+        maxOpenPositions: z.coerce.number().int().min(1).max(10),
+        takeProfitBps: z.coerce.number().int().min(100).max(10_000),
+        stopLossBps: z.coerce.number().int().min(100).max(5_000),
+        trailingStopBps: z.coerce.number().int().min(0).max(5_000),
+        maxHoldMinutes: z.coerce.number().int().min(5).max(10_080),
+        cooldownMinutes: z.coerce.number().int().min(1).max(1_440),
+    });
+    router.get("/v1/me/paper-bot", requireAuth, async (req, res) => {
+        try {
+            const parsed = z.object({ limit: z.coerce.number().int().min(1).max(100).default(30) }).safeParse(req.query);
+            if (!parsed.success)
+                throw new ArbError("VALIDATION_ERROR", "Invalid paper-bot history limit.", 400);
+            const configs = new PaperBotConfigRepository(getDb());
+            const config = await configs.ensureDefault(currentUser(res).id, clock());
+            const decisions = await new PaperBotDecisionRepository(getDb()).listForUser(currentUser(res).id, parsed.data.limit);
+            res.json({
+                simulated: true,
+                executionEnabled: false,
+                config: serializeBotConfig(config),
+                decisions: decisions.map(serializeBotDecision),
+                notice: "The shadow bot can only open and close virtual positions. It never builds, signs, or submits a transaction.",
+            });
+        }
+        catch (err) {
+            fail(res, err);
+        }
+    });
+    router.put("/v1/me/paper-bot", requireAuth, async (req, res) => {
+        try {
+            const parsed = botConfigSchema.safeParse(req.body);
+            if (!parsed.success) {
+                throw new ArbError("VALIDATION_ERROR", "Invalid paper-bot strategy settings.", 400, {
+                    issues: parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`),
+                });
+            }
+            if (parsed.data.enabled && emailVerificationRequired && !currentUser(res).emailVerified) {
+                throw new ArbError("EMAIL_VERIFICATION_REQUIRED", "Verify your email before enabling the paper bot.", 403);
+            }
+            await consumeLimit(res, "paper:writes", currentUser(res).id, rateLimits.paperAttempts, rateLimits.paperWindowMs);
+            const tradeSizeMicroUsd = parseMicroUsd(parsed.data.tradeSizeUsd, "Trade size");
+            const minLiquidityMicroUsd = parseMicroUsd(parsed.data.minLiquidityUsd, "Minimum liquidity");
+            if (tradeSizeMicroUsd < 10000000n || tradeSizeMicroUsd > 10000000000n) {
+                throw new ArbError("AMOUNT_OUT_OF_RANGE", "Paper-bot trade size must be between $10 and $10,000.", 400);
+            }
+            if (minLiquidityMicroUsd < 10000000000n || minLiquidityMicroUsd > 1000000000000000n) {
+                throw new ArbError("AMOUNT_OUT_OF_RANGE", "Paper-bot minimum liquidity must be between $10,000 and $1 billion.", 400);
+            }
+            const configs = new PaperBotConfigRepository(getDb());
+            await configs.ensureDefault(currentUser(res).id, clock());
+            const config = await configs.save(currentUser(res).id, parsed.data.enabled, {
+                tradeSizeMicroUsd,
+                minQualityScore: parsed.data.minQualityScore,
+                maxRiskScore: parsed.data.maxRiskScore,
+                minLiquidityMicroUsd,
+                maxPriceImpactBps: BigInt(parsed.data.maxPriceImpactBps),
+                slippageBps: BigInt(parsed.data.slippageBps),
+                maxOpenPositions: parsed.data.maxOpenPositions,
+                takeProfitBps: BigInt(parsed.data.takeProfitBps),
+                stopLossBps: BigInt(parsed.data.stopLossBps),
+                trailingStopBps: BigInt(parsed.data.trailingStopBps),
+                maxHoldMinutes: parsed.data.maxHoldMinutes,
+                cooldownMinutes: parsed.data.cooldownMinutes,
+            }, clock());
+            res.json({ simulated: true, executionEnabled: false, config: serializeBotConfig(config) });
         }
         catch (err) {
             fail(res, err);

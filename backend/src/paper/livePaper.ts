@@ -30,6 +30,17 @@ export interface PaperPositionValuation {
   detail: string | null;
 }
 
+/** Internal metadata used only by the simulation worker. Browser routes never
+ * accept these fields from a caller. */
+export interface PaperPositionOpenOptions {
+  openedBy?: "manual" | "paper_bot";
+  botConfigId?: string | null;
+  maxBotOpenPositions?: number | null;
+  minLiquidityMicroUsd?: bigint;
+  maxRiskScore?: number;
+  maxEntryPriceImpactBps?: bigint;
+}
+
 const pct = (bps: bigint): string => (Number(bps) / 100).toFixed(2);
 
 function uniqueRouteLabels(quote: NormalizedSwapQuote): string[] {
@@ -85,6 +96,8 @@ function paperPositionView(record: LivePaperPositionRecord, valuation?: PaperPos
     id: record.id,
     simulated: true,
     executionEnabled: false,
+    openedBy: record.openedBy,
+    managedByPaperBot: record.openedBy === "paper_bot",
     status: record.status,
     token: {
       mint: record.tokenMint,
@@ -192,14 +205,20 @@ export class LivePaperTradingService {
     amountUsd: string,
     slippageBps: bigint,
     clientRequestId: string,
+    options: PaperPositionOpenOptions = {},
   ): Promise<Record<string, unknown>> {
     const amountMicroUsd = this.parseEntryAmount(amountUsd);
+    const openedBy = options.openedBy ?? "manual";
+    const botConfigId = options.botConfigId ?? null;
+    const maxBotOpenPositions = options.maxBotOpenPositions ?? null;
     const replay = await this.positions.findByClientRequestId(userId, clientRequestId);
     if (replay) {
       if (
         replay.tokenMint !== tokenMint ||
         replay.entryCostMicroUsd !== amountMicroUsd ||
-        replay.entrySlippageBps !== slippageBps
+        replay.entrySlippageBps !== slippageBps ||
+        replay.openedBy !== openedBy ||
+        replay.botConfigId !== botConfigId
       ) {
         throw new ArbError(
           "VALIDATION_ERROR",
@@ -218,10 +237,35 @@ export class LivePaperTradingService {
         { verdict: check.verdict, blockingGateIds: check.blockingGateIds },
       );
     }
+    const botLiquidityFloor = options.minLiquidityMicroUsd;
+    if (
+      botLiquidityFloor !== undefined &&
+      (check.profile.market.liquidityUsdMicro === null || check.profile.market.liquidityUsdMicro < botLiquidityFloor)
+    ) {
+      throw new ArbError(
+        "PAPER_TRADE_INELIGIBLE",
+        "Live liquidity fell below the paper bot's configured floor before entry.",
+        409,
+        { blockingGateIds: ["bot_minimum_liquidity"] },
+      );
+    }
+    if (options.maxRiskScore !== undefined && check.profile.risk.score > options.maxRiskScore) {
+      throw new ArbError(
+        "PAPER_TRADE_INELIGIBLE",
+        "The verified research risk score rose above the paper bot's configured ceiling.",
+        409,
+        { blockingGateIds: ["bot_maximum_risk"], riskScore: check.profile.risk.score },
+      );
+    }
     const nowMs = this.clock();
     const quote = check.quote;
     assertFreshQuote(quote, USDC_MINT, check.mint, amountMicroUsd, nowMs);
-    if (quote.priceImpactBps > this.config.maxEntryPriceImpactBps) {
+    const maxImpact = options.maxEntryPriceImpactBps === undefined
+      ? this.config.maxEntryPriceImpactBps
+      : options.maxEntryPriceImpactBps < this.config.maxEntryPriceImpactBps
+        ? options.maxEntryPriceImpactBps
+        : this.config.maxEntryPriceImpactBps;
+    if (quote.priceImpactBps > maxImpact) {
       throw new ArbError("PRICE_IMPACT_TOO_HIGH", "Price impact exceeds the paper-entry policy.", 409);
     }
 
@@ -246,6 +290,9 @@ export class LivePaperTradingService {
         entryQuoteRetrievedAtMs: quote.retrievedAtMs,
         entryQuoteExpiresAtMs: quote.expiresAtMs,
         openedAtMs: nowMs,
+        openedBy,
+        botConfigId,
+        maxBotOpenPositions,
       },
     );
     return paperPositionView(record);
@@ -255,6 +302,7 @@ export class LivePaperTradingService {
     userId: string,
     positionId: string,
     slippageBps: bigint,
+    options: { botConfigId?: string } = {},
   ): Promise<Record<string, unknown>> {
     const existing = await this.positions.findOwned(userId, positionId);
     if (!existing) throw new ArbError("POSITION_NOT_FOUND", "Paper position not found", 404);
@@ -281,7 +329,7 @@ export class LivePaperTradingService {
       exitQuoteRetrievedAtMs: quote.retrievedAtMs,
       exitQuoteExpiresAtMs: quote.expiresAtMs,
       closedAtMs: nowMs,
-    });
+    }, options.botConfigId ?? null);
     return paperPositionView(closed);
   }
 

@@ -43,6 +43,8 @@ function paperPositionView(record, valuation) {
         id: record.id,
         simulated: true,
         executionEnabled: false,
+        openedBy: record.openedBy,
+        managedByPaperBot: record.openedBy === "paper_bot",
         status: record.status,
         token: {
             mint: record.tokenMint,
@@ -131,13 +133,18 @@ export class LivePaperTradingService {
         }
         return amount;
     }
-    async openPosition(userId, tokenMint, amountUsd, slippageBps, clientRequestId) {
+    async openPosition(userId, tokenMint, amountUsd, slippageBps, clientRequestId, options = {}) {
         const amountMicroUsd = this.parseEntryAmount(amountUsd);
+        const openedBy = options.openedBy ?? "manual";
+        const botConfigId = options.botConfigId ?? null;
+        const maxBotOpenPositions = options.maxBotOpenPositions ?? null;
         const replay = await this.positions.findByClientRequestId(userId, clientRequestId);
         if (replay) {
             if (replay.tokenMint !== tokenMint ||
                 replay.entryCostMicroUsd !== amountMicroUsd ||
-                replay.entrySlippageBps !== slippageBps) {
+                replay.entrySlippageBps !== slippageBps ||
+                replay.openedBy !== openedBy ||
+                replay.botConfigId !== botConfigId) {
                 throw new ArbError("VALIDATION_ERROR", "That paper request id was already used for a different entry.", 409);
             }
             return paperPositionView(replay);
@@ -146,10 +153,23 @@ export class LivePaperTradingService {
         if (!check.eligible || !check.quote) {
             throw new ArbError("PAPER_TRADE_INELIGIBLE", "This token did not pass every required production gate for that paper entry.", 409, { verdict: check.verdict, blockingGateIds: check.blockingGateIds });
         }
+        const botLiquidityFloor = options.minLiquidityMicroUsd;
+        if (botLiquidityFloor !== undefined &&
+            (check.profile.market.liquidityUsdMicro === null || check.profile.market.liquidityUsdMicro < botLiquidityFloor)) {
+            throw new ArbError("PAPER_TRADE_INELIGIBLE", "Live liquidity fell below the paper bot's configured floor before entry.", 409, { blockingGateIds: ["bot_minimum_liquidity"] });
+        }
+        if (options.maxRiskScore !== undefined && check.profile.risk.score > options.maxRiskScore) {
+            throw new ArbError("PAPER_TRADE_INELIGIBLE", "The verified research risk score rose above the paper bot's configured ceiling.", 409, { blockingGateIds: ["bot_maximum_risk"], riskScore: check.profile.risk.score });
+        }
         const nowMs = this.clock();
         const quote = check.quote;
         assertFreshQuote(quote, USDC_MINT, check.mint, amountMicroUsd, nowMs);
-        if (quote.priceImpactBps > this.config.maxEntryPriceImpactBps) {
+        const maxImpact = options.maxEntryPriceImpactBps === undefined
+            ? this.config.maxEntryPriceImpactBps
+            : options.maxEntryPriceImpactBps < this.config.maxEntryPriceImpactBps
+                ? options.maxEntryPriceImpactBps
+                : this.config.maxEntryPriceImpactBps;
+        if (quote.priceImpactBps > maxImpact) {
             throw new ArbError("PRICE_IMPACT_TOO_HIGH", "Price impact exceeds the paper-entry policy.", 409);
         }
         const record = await this.positions.open(userId, this.config.startingMicroUsd, this.config.maxOpenPositions, {
@@ -169,10 +189,13 @@ export class LivePaperTradingService {
             entryQuoteRetrievedAtMs: quote.retrievedAtMs,
             entryQuoteExpiresAtMs: quote.expiresAtMs,
             openedAtMs: nowMs,
+            openedBy,
+            botConfigId,
+            maxBotOpenPositions,
         });
         return paperPositionView(record);
     }
-    async closePosition(userId, positionId, slippageBps) {
+    async closePosition(userId, positionId, slippageBps, options = {}) {
         const existing = await this.positions.findOwned(userId, positionId);
         if (!existing)
             throw new ArbError("POSITION_NOT_FOUND", "Paper position not found", 404);
@@ -197,7 +220,7 @@ export class LivePaperTradingService {
             exitQuoteRetrievedAtMs: quote.retrievedAtMs,
             exitQuoteExpiresAtMs: quote.expiresAtMs,
             closedAtMs: nowMs,
-        });
+        }, options.botConfigId ?? null);
         return paperPositionView(closed);
     }
     async valueOpenPosition(record) {

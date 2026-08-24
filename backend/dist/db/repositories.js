@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { ArbError } from "../core/errors.js";
+import { PAPER_BOT_STRATEGY_VERSION, } from "../bot/types.js";
 import { readBigInt, readDateMs, readString } from "./client.js";
 function readInteger(value) {
     const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
@@ -13,6 +14,22 @@ function readNullableDateMs(value) {
 function readNullableString(value) {
     return value === null || value === undefined ? null : readString(value);
 }
+function readBoolean(value) {
+    if (typeof value === "boolean")
+        return value;
+    if (value === "true" || value === 1 || value === "1")
+        return true;
+    if (value === "false" || value === 0 || value === "0")
+        return false;
+    throw new Error("Expected a boolean database value");
+}
+function readJsonObject(value) {
+    const parsed = typeof value === "string" ? JSON.parse(value) : value;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("Expected a JSON object");
+    }
+    return parsed;
+}
 function readRoute(value) {
     const parsed = typeof value === "string" ? JSON.parse(value) : value;
     if (!Array.isArray(parsed) || !parsed.every((item) => typeof item === "string")) {
@@ -24,6 +41,9 @@ function toLivePaperPosition(row) {
     const status = readString(row.status);
     if (status !== "open" && status !== "closed")
         throw new Error("Unexpected paper-position status");
+    const openedBy = readString(row.opened_by);
+    if (openedBy !== "manual" && openedBy !== "paper_bot")
+        throw new Error("Unexpected paper-position origin");
     return {
         id: readString(row.id),
         portfolioId: readString(row.portfolio_id),
@@ -59,6 +79,8 @@ function toLivePaperPosition(row) {
         exitQuoteExpiresAtMs: readNullableDateMs(row.exit_quote_expires_at),
         closedAtMs: readNullableDateMs(row.closed_at),
         clientRequestId: readNullableString(row.client_request_id),
+        openedBy,
+        botConfigId: readNullableString(row.bot_config_id),
     };
 }
 /** Opaque database identity: raw emails and user ids never enter limit rows. */
@@ -328,16 +350,59 @@ export class LivePaperPositionRepository {
         order by pp.opened_at desc`, [userId]);
         return rows.map(toLivePaperPosition);
     }
+    async listOpenForBot(configId) {
+        const rows = await this.db.query(`select pp.*
+         from paper_positions pp
+        where pp.bot_config_id = $1
+          and pp.opened_by = 'paper_bot'
+          and pp.status = 'open'
+        order by pp.opened_at asc`, [configId]);
+        return rows.map(toLivePaperPosition);
+    }
+    async hasBotPositionSince(configId, tokenMint, sinceMs) {
+        const rows = await this.db.query(`select 1
+         from paper_positions
+        where bot_config_id = $1
+          and opened_by = 'paper_bot'
+          and token_mint = $2
+          and opened_at >= to_timestamp($3::double precision / 1000)
+        limit 1`, [configId, tokenMint, sinceMs]);
+        return rows.length > 0;
+    }
     async open(userId, startingMicroUsd, maxOpenPositions, input) {
         return this.db.transaction(async (tx) => {
             const portfolio = await new PortfolioRepository(tx).ensureDefault(userId, startingMicroUsd);
             await tx.query("select id from portfolios where id = $1 and user_id = $2 for update", [portfolio.id, userId]);
+            if (input.openedBy === "paper_bot") {
+                if (!input.botConfigId || input.maxBotOpenPositions === null) {
+                    throw new ArbError("INTERNAL_ERROR", "Paper-bot metadata is incomplete.", 500);
+                }
+                // Locking the config serializes concurrent worker instances and makes
+                // disabling the bot win before any later automatic debit can commit.
+                const botConfig = await tx.query(`select id from paper_bot_configs
+            where id = $1 and user_id = $2 and enabled = true
+            for update`, [input.botConfigId, userId]);
+                if (!botConfig[0]) {
+                    throw new ArbError("PAPER_BOT_DISABLED", "The paper bot was disabled before this entry could open.", 409);
+                }
+                const botCounts = await tx.query(`select count(*)::text as count
+             from paper_positions
+            where bot_config_id = $1 and opened_by = 'paper_bot' and status = 'open'`, [input.botConfigId]);
+                if (Number(botCounts[0]?.count ?? "0") >= input.maxBotOpenPositions) {
+                    throw new ArbError("POSITION_LIMIT_REACHED", "The paper bot reached its open-position limit.", 409);
+                }
+            }
+            else if (input.botConfigId !== null || input.maxBotOpenPositions !== null) {
+                throw new ArbError("INTERNAL_ERROR", "Manual paper entries cannot carry paper-bot metadata.", 500);
+            }
             const replay = await tx.query("select * from paper_positions where portfolio_id = $1 and client_request_id = $2", [portfolio.id, input.clientRequestId]);
             if (replay[0]) {
                 const existing = toLivePaperPosition(replay[0]);
                 if (existing.tokenMint !== input.tokenMint ||
                     existing.entryCostMicroUsd !== input.entryCostMicroUsd ||
-                    existing.entrySlippageBps !== input.entrySlippageBps) {
+                    existing.entrySlippageBps !== input.entrySlippageBps ||
+                    existing.openedBy !== input.openedBy ||
+                    existing.botConfigId !== input.botConfigId) {
                     throw new ArbError("VALIDATION_ERROR", "That paper request id was already used for a different entry.", 409);
                 }
                 return existing;
@@ -359,12 +424,12 @@ export class LivePaperPositionRepository {
            token_quantity_base_units, entry_cost_micro_usd, entry_slippage_bps,
            entry_price_impact_bps, entry_route, entry_quote_source,
            entry_quote_retrieved_at, entry_quote_expires_at, opened_at,
-           client_request_id
-         ) values (
+            client_request_id, opened_by, bot_config_id
+          ) values (
            $1, $2, $3, $4, $5, 'open', $6, $7, $8, $9, $10::jsonb, $11,
            to_timestamp($12::double precision / 1000),
            to_timestamp($13::double precision / 1000),
-           to_timestamp($14::double precision / 1000), $15
+            to_timestamp($14::double precision / 1000), $15, $16, $17
          ) returning *`, [
                 portfolio.id,
                 input.tokenMint,
@@ -381,11 +446,13 @@ export class LivePaperPositionRepository {
                 input.entryQuoteExpiresAtMs,
                 input.openedAtMs,
                 input.clientRequestId,
+                input.openedBy,
+                input.botConfigId,
             ]);
             return toLivePaperPosition(rows[0]);
         });
     }
-    async close(userId, positionId, input) {
+    async close(userId, positionId, input, botConfigId = null) {
         return this.db.transaction(async (tx) => {
             const rows = await tx.query(`select pp.*
            from paper_positions pp
@@ -397,6 +464,15 @@ export class LivePaperPositionRepository {
             const existing = toLivePaperPosition(rows[0]);
             if (existing.status === "closed") {
                 throw new ArbError("POSITION_ALREADY_CLOSED", "This paper position is already closed", 409);
+            }
+            if (botConfigId !== null) {
+                if (existing.openedBy !== "paper_bot" || existing.botConfigId !== botConfigId) {
+                    throw new ArbError("FORBIDDEN", "This position is not managed by that paper bot.", 403);
+                }
+                const enabled = await tx.query("select id from paper_bot_configs where id = $1 and user_id = $2 and enabled = true for update", [botConfigId, userId]);
+                if (!enabled[0]) {
+                    throw new ArbError("PAPER_BOT_DISABLED", "The paper bot was disabled before this close could commit.", 409);
+                }
             }
             const realized = input.closeProceedsMicroUsd - existing.entryCostMicroUsd;
             const updated = await tx.query(`update paper_positions
@@ -734,5 +810,222 @@ export class TokenObservationRepository {
             snapshot.observedAtMs,
             nowMs,
         ]);
+    }
+}
+function toPaperBotConfig(row) {
+    const strategyVersion = readString(row.strategy_version);
+    if (strategyVersion !== PAPER_BOT_STRATEGY_VERSION)
+        throw new Error("Unexpected paper-bot strategy version");
+    const lastRunStatus = readNullableString(row.last_run_status);
+    if (lastRunStatus !== null && !["ok", "degraded", "error"].includes(lastRunStatus)) {
+        throw new Error("Unexpected paper-bot run status");
+    }
+    return {
+        id: readString(row.id),
+        userId: readString(row.user_id),
+        enabled: readBoolean(row.enabled),
+        strategyVersion,
+        tradeSizeMicroUsd: readBigInt(row.trade_size_micro_usd),
+        minQualityScore: readInteger(row.min_quality_score),
+        maxRiskScore: readInteger(row.max_risk_score),
+        minLiquidityMicroUsd: readBigInt(row.min_liquidity_micro_usd),
+        maxPriceImpactBps: readBigInt(row.max_price_impact_bps),
+        slippageBps: readBigInt(row.slippage_bps),
+        maxOpenPositions: readInteger(row.max_open_positions),
+        takeProfitBps: readBigInt(row.take_profit_bps),
+        stopLossBps: readBigInt(row.stop_loss_bps),
+        trailingStopBps: readBigInt(row.trailing_stop_bps),
+        maxHoldMinutes: readInteger(row.max_hold_minutes),
+        cooldownMinutes: readInteger(row.cooldown_minutes),
+        lastRunAtMs: readNullableDateMs(row.last_run_at),
+        lastRunStatus: lastRunStatus,
+        lastRunSummary: readNullableString(row.last_run_summary),
+        createdAtMs: readDateMs(row.created_at),
+        updatedAtMs: readDateMs(row.updated_at),
+    };
+}
+export class PaperBotConfigRepository {
+    db;
+    constructor(db) {
+        this.db = db;
+    }
+    async ensureDefault(userId, nowMs) {
+        const rows = await this.db.query(`insert into paper_bot_configs (user_id, created_at, updated_at)
+       values ($1, to_timestamp($2::double precision / 1000), to_timestamp($2::double precision / 1000))
+       on conflict (user_id) do update set user_id = excluded.user_id
+       returning *`, [userId, nowMs]);
+        return toPaperBotConfig(rows[0]);
+    }
+    async findById(configId) {
+        const rows = await this.db.query("select * from paper_bot_configs where id = $1", [configId]);
+        return rows[0] ? toPaperBotConfig(rows[0]) : null;
+    }
+    async listEnabled(limit = 100) {
+        const rows = await this.db.query(`select * from paper_bot_configs
+        where enabled = true
+        order by updated_at asc
+        limit $1`, [limit]);
+        return rows.map(toPaperBotConfig);
+    }
+    async save(userId, enabled, strategy, nowMs) {
+        const rows = await this.db.query(`update paper_bot_configs set
+         enabled = $2,
+         trade_size_micro_usd = $3,
+         min_quality_score = $4,
+         max_risk_score = $5,
+         min_liquidity_micro_usd = $6,
+         max_price_impact_bps = $7,
+         slippage_bps = $8,
+         max_open_positions = $9,
+         take_profit_bps = $10,
+         stop_loss_bps = $11,
+         trailing_stop_bps = $12,
+         max_hold_minutes = $13,
+         cooldown_minutes = $14,
+         updated_at = to_timestamp($15::double precision / 1000)
+       where user_id = $1
+       returning *`, [
+            userId,
+            enabled,
+            strategy.tradeSizeMicroUsd.toString(),
+            strategy.minQualityScore,
+            strategy.maxRiskScore,
+            strategy.minLiquidityMicroUsd.toString(),
+            strategy.maxPriceImpactBps.toString(),
+            strategy.slippageBps.toString(),
+            strategy.maxOpenPositions,
+            strategy.takeProfitBps.toString(),
+            strategy.stopLossBps.toString(),
+            strategy.trailingStopBps.toString(),
+            strategy.maxHoldMinutes,
+            strategy.cooldownMinutes,
+            nowMs,
+        ]);
+        if (!rows[0])
+            throw new ArbError("PAPER_BOT_NOT_FOUND", "Paper-bot settings were not initialized.", 404);
+        return toPaperBotConfig(rows[0]);
+    }
+    async markRun(configId, status, summary, nowMs) {
+        await this.db.query(`update paper_bot_configs set
+         last_run_at = to_timestamp($2::double precision / 1000),
+         last_run_status = $3,
+         last_run_summary = left($4, 500)
+       where id = $1`, [configId, nowMs, status, summary]);
+    }
+}
+function toPaperBotDecision(row) {
+    const action = readString(row.action);
+    const actions = [
+        "opened",
+        "entry_rejected",
+        "closed",
+        "exit_unavailable",
+        "scan_empty",
+        "error",
+    ];
+    if (!actions.includes(action))
+        throw new Error("Unexpected paper-bot decision action");
+    return {
+        id: readString(row.id),
+        configId: readString(row.config_id),
+        positionId: readNullableString(row.position_id),
+        tokenMint: readNullableString(row.token_mint),
+        tokenSymbol: readNullableString(row.token_symbol),
+        action: action,
+        qualityScore: row.quality_score === null ? null : readInteger(row.quality_score),
+        riskScore: row.risk_score === null ? null : readInteger(row.risk_score),
+        reason: readString(row.reason),
+        snapshot: readJsonObject(row.snapshot),
+        createdAtMs: readDateMs(row.created_at),
+    };
+}
+export class PaperBotDecisionRepository {
+    db;
+    constructor(db) {
+        this.db = db;
+    }
+    async create(input) {
+        const rows = await this.db.query(`insert into paper_bot_decisions (
+         config_id, position_id, token_mint, token_symbol, action,
+         quality_score, risk_score, reason, snapshot, created_at
+       ) values ($1, $2, $3, $4, $5, $6, $7, left($8, 500), $9::jsonb,
+                 to_timestamp($10::double precision / 1000))
+       returning *`, [
+            input.configId,
+            input.positionId ?? null,
+            input.tokenMint ?? null,
+            input.tokenSymbol ?? null,
+            input.action,
+            input.qualityScore ?? null,
+            input.riskScore ?? null,
+            input.reason,
+            JSON.stringify(input.snapshot ?? {}),
+            input.createdAtMs,
+        ]);
+        return toPaperBotDecision(rows[0]);
+    }
+    async listForUser(userId, limit = 30) {
+        const rows = await this.db.query(`select d.*
+         from paper_bot_decisions d
+         join paper_bot_configs c on c.id = d.config_id
+        where c.user_id = $1
+        order by d.created_at desc
+        limit $2`, [userId, limit]);
+        return rows.map(toPaperBotDecision);
+    }
+    async hasRecentAction(configId, tokenMint, action, sinceMs) {
+        const rows = await this.db.query(`select 1 from paper_bot_decisions
+        where config_id = $1
+          and token_mint is not distinct from $2
+          and action = $3
+          and created_at >= to_timestamp($4::double precision / 1000)
+        limit 1`, [configId, tokenMint, action, sinceMs]);
+        return rows.length > 0;
+    }
+}
+function toPaperBotPositionState(row) {
+    return {
+        positionId: readString(row.position_id),
+        configId: readString(row.config_id),
+        highWaterValueMicroUsd: readBigInt(row.high_water_value_micro_usd),
+        lastValueMicroUsd: row.last_value_micro_usd === null ? null : readBigInt(row.last_value_micro_usd),
+        lastEvaluatedAtMs: readNullableDateMs(row.last_evaluated_at),
+        exitReason: readNullableString(row.exit_reason),
+        createdAtMs: readDateMs(row.created_at),
+        updatedAtMs: readDateMs(row.updated_at),
+    };
+}
+export class PaperBotPositionStateRepository {
+    db;
+    constructor(db) {
+        this.db = db;
+    }
+    async get(positionId) {
+        const rows = await this.db.query("select * from paper_bot_position_state where position_id = $1", [positionId]);
+        return rows[0] ? toPaperBotPositionState(rows[0]) : null;
+    }
+    async recordValue(positionId, configId, highWaterMicroUsd, valueMicroUsd, nowMs) {
+        const rows = await this.db.query(`insert into paper_bot_position_state (
+         position_id, config_id, high_water_value_micro_usd, last_value_micro_usd,
+         last_evaluated_at, created_at, updated_at
+       ) values ($1, $2, $3, $4,
+                 to_timestamp($5::double precision / 1000),
+                 to_timestamp($5::double precision / 1000),
+                 to_timestamp($5::double precision / 1000))
+       on conflict (position_id) do update set
+         high_water_value_micro_usd = greatest(
+           paper_bot_position_state.high_water_value_micro_usd,
+           excluded.high_water_value_micro_usd
+         ),
+         last_value_micro_usd = excluded.last_value_micro_usd,
+         last_evaluated_at = excluded.last_evaluated_at,
+         updated_at = excluded.updated_at
+       returning *`, [positionId, configId, highWaterMicroUsd.toString(), valueMicroUsd.toString(), nowMs]);
+        return toPaperBotPositionState(rows[0]);
+    }
+    async markExited(positionId, reason, nowMs) {
+        await this.db.query(`update paper_bot_position_state
+          set exit_reason = left($2, 120), updated_at = to_timestamp($3::double precision / 1000)
+        where position_id = $1`, [positionId, reason, nowMs]);
     }
 }

@@ -1,7 +1,8 @@
-# Alert worker
+# Background worker: alerts and shadow paper bot
 
-A long-running process that evaluates every user's alert rules and records what
-fired. Deployed **separately from the Vercel API**, from this same repository.
+A long-running process that evaluates every user's alert rules and runs enabled
+simulation-only shadow strategies. Deployed **separately from the Vercel API**,
+from this same repository.
 
 ## Why it is separate
 
@@ -22,8 +23,23 @@ alerting product for tokens that can rug in ninety seconds.
    `alert_rule_state`.
 5. Overwrites the snapshot, ready for the next pass.
 
-It never trades, never signs, and holds no keys. Its only writes are alert
-events, rule state, and token snapshots.
+The alert pass writes only alert events, rule state, and token snapshots. The
+paper-bot pass may open or close virtual `paper_positions` and records every
+decision. The process never builds a transaction, never signs, never submits,
+and holds no wallet or keys.
+
+## Shadow paper-bot pass
+
+After alerts, each pass loads at most 100 enabled bot configurations. It values
+existing bot positions first with exact-size sell quotes, applies deterministic
+stop/target/trailing/time exits, then fetches the five-minute trending feed once
+for all users. At most three candidates per account reach the expensive
+production-gate check, and at most one position is opened per account per pass.
+
+The strategy is disabled by default. Turning it off is synchronized with the
+position transaction, so no later automatic open or close can commit after the
+disable request completes. Manual closes remain available for every bot-opened
+position.
 
 ## Deploying to Railway
 

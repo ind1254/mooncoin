@@ -206,6 +206,14 @@ describe("account email configuration", () => {
           created_at timestamptz not null default now(),
           updated_at timestamptz not null default now()
         );
+        -- This fixture records migration 002 as applied, so preserve the one
+        -- table later migrations legitimately extend.
+        create table paper_positions (
+          id uuid primary key default gen_random_uuid(),
+          token_mint text not null default 'legacy-mint',
+          status text not null default 'open',
+          opened_at timestamptz not null default now()
+        );
         insert into users (email, password_hash) values ('legacy@example.com', 'legacy-hash');
         insert into schema_migrations (name) values
           ('001_init.sql'), ('002_live_paper_positions.sql'), ('003_production_safeguards.sql');

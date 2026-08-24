@@ -21,12 +21,22 @@ import {
   AlertEventRepository,
   AlertRuleRepository,
   AlertRuleStateRepository,
+  LivePaperPositionRepository,
+  PaperBotConfigRepository,
+  PaperBotDecisionRepository,
+  PaperBotPositionStateRepository,
   TokenObservationRepository,
 } from "../db/repositories.js";
 import { JupiterTokenSearchProvider } from "../market/jupiter/tokenSearch.js";
+import { JupiterLiveFeedProvider } from "../market/jupiter/liveFeed.js";
+import { JupiterQuoteProvider } from "../market/jupiter/quotes.js";
 import { ResearchService } from "../market/research.js";
 import { SolanaRpcClient } from "../market/solana/rpc.js";
+import { TradabilityService } from "../market/tradability.js";
 import { runAlertPass } from "../alerts/worker.js";
+import { runPaperBotPass } from "../bot/worker.js";
+import { LivePaperTradingService } from "../paper/livePaper.js";
+import { usdToMicro } from "../core/money.js";
 
 // Local development convenience; production injects real environment vars.
 try {
@@ -47,7 +57,7 @@ if (!env.DATABASE_URL) {
   process.exit(1);
 }
 
-const intervalMs = Number(process.env.ALERT_INTERVAL_MS ?? 60_000);
+const intervalMs = env.ALERT_INTERVAL_MS;
 // A single connection is plenty: the worker runs one pass at a time.
 const db = createPgClient({ connectionString: env.DATABASE_URL, maxConnections: 2 });
 
@@ -66,12 +76,53 @@ const research = new ResearchService(
   { clock: Date.now, mintCacheTtlMs: env.MINT_CACHE_TTL_MS },
 );
 
+const quotes = new JupiterQuoteProvider({
+  baseUrl: env.JUPITER_QUOTE_URL,
+  ...(env.JUPITER_API_KEY ? { apiKey: env.JUPITER_API_KEY } : {}),
+  clock: Date.now,
+});
+const liveFeed = new JupiterLiveFeedProvider({
+  baseUrl: env.JUPITER_TOKENS_URL,
+  ...(env.JUPITER_API_KEY ? { apiKey: env.JUPITER_API_KEY } : {}),
+  clock: Date.now,
+});
+const tradability = new TradabilityService(
+  research,
+  quotes,
+  {
+    minLiquidityUsdMicro: usdToMicro(env.TRADABILITY_MIN_LIQUIDITY_USD),
+    maxPriceImpactBps: BigInt(env.TRADABILITY_MAX_PRICE_IMPACT_BPS),
+    maxMarketAgeMs: env.TRADABILITY_MAX_MARKET_AGE_MS,
+  },
+  Date.now,
+);
+
 const deps = {
   research,
   rules: new AlertRuleRepository(db),
   states: new AlertRuleStateRepository(db),
   events: new AlertEventRepository(db),
   observations: new TokenObservationRepository(db),
+  clock: Date.now,
+  log,
+};
+
+const paperConfig = {
+  startingMicroUsd: usdToMicro(env.PAPER_STARTING_USD),
+  minTradeMicroUsd: usdToMicro(env.PAPER_MIN_TRADE_USD),
+  maxTradeMicroUsd: usdToMicro(env.PAPER_MAX_TRADE_USD),
+  maxOpenPositions: env.PAPER_MAX_OPEN_POSITIONS,
+  maxEntryPriceImpactBps: BigInt(env.TRADABILITY_MAX_PRICE_IMPACT_BPS),
+};
+const botDeps = {
+  configs: new PaperBotConfigRepository(db),
+  positions: new LivePaperPositionRepository(db),
+  states: new PaperBotPositionStateRepository(db),
+  decisions: new PaperBotDecisionRepository(db),
+  feed: liveFeed,
+  quotes,
+  createPaperTrading: () => new LivePaperTradingService(db, tradability, quotes, paperConfig, Date.now),
+  maxMarketAgeMs: env.TRADABILITY_MAX_MARKET_AGE_MS,
   clock: Date.now,
   log,
 };
@@ -86,15 +137,20 @@ async function tick(): Promise<void> {
   if (running || stopping) return;
   running = true;
   try {
-    const summary = await runAlertPass(deps);
-    if (summary.rulesEvaluated > 0 || summary.mintsFailed > 0) {
-      log({ msg: "alert pass complete", ...summary });
+    const alertSummary = await runAlertPass(deps);
+    if (alertSummary.rulesEvaluated > 0 || alertSummary.mintsFailed > 0) {
+      log({ msg: "alert pass complete", ...alertSummary });
     }
-    if (summary.durationMs > intervalMs) {
+    const botSummary = await runPaperBotPass(botDeps);
+    if (botSummary.configsProcessed > 0 || botSummary.providerFailures > 0) {
+      log({ msg: "paper bot pass complete", ...botSummary });
+    }
+    const durationMs = alertSummary.durationMs + botSummary.durationMs;
+    if (durationMs > intervalMs) {
       log({
         level: "warn",
         msg: "pass took longer than its interval; raise ALERT_INTERVAL_MS or reduce watched tokens",
-        durationMs: summary.durationMs,
+        durationMs,
         intervalMs,
       });
     }

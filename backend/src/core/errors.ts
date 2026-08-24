@@ -20,6 +20,8 @@ export type ErrorCode =
   | "POSITION_ALREADY_CLOSED"
   | "PAPER_TRADE_INELIGIBLE"
   | "POSITION_LIMIT_REACHED"
+  | "PAPER_BOT_DISABLED"
+  | "PAPER_BOT_NOT_FOUND"
   /** No live quote could be obtained. Never substituted with a simulated one. */
   | "QUOTE_UNAVAILABLE"
   // Identity and access
