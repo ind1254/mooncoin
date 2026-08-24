@@ -50,12 +50,22 @@
       },
       "continue": true
     },
+    {
+      "src": "/(privacy|support)/?",
+      "headers": {
+        "Content-Security-Policy": "default-src 'self'; script-src 'none'; style-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
+      },
+      "continue": true
+    },
     { "src": "/api/cron/worker", "dest": "/api/cron-worker.js" },
     { "src": "/health", "dest": "/api/index.js" },
     { "src": "/v1/(.*)", "dest": "/api/index.js" },
     { "src": "/admin/(.*)", "dest": "/api/index.js" },
     { "src": "/demo", "dest": "/demo/index.html" },
     { "src": "/demo/(.*)", "dest": "/demo/$1" },
+    { "src": "/privacy/?", "dest": "/web/privacy.html" },
+    { "src": "/support/?", "dest": "/web/support.html" },
+    { "src": "/legal\\.css", "dest": "/web/legal.css" },
     { "src": "/(app\\.js|styles\\.css)", "dest": "/web/$1" },
     { "src": "/", "dest": "/web/index.html" }
   ]

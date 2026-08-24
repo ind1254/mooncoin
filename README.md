@@ -166,6 +166,8 @@ backend/src/
                         arbitrage-calculator routes (original add-on, still works)
   core/ adapters/ ...   Original arbitrage engine (BigInt money math) — reused
 ios/ArbitrageAddOn/     SwiftUI module for the original arbitrage calculator
+ios/Moonpaper/          Native SwiftUI iPhone app: live discovery, search,
+                        research, risk explanations, and manual FOMO handoff
 demo/                   Original phone-frame arbitrage demo (served at /demo)
                         (Mentions of "Fomo" in ios/, demo/, and docs/ refer to
                         the unrelated third-party app the original add-on would

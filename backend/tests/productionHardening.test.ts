@@ -125,4 +125,16 @@ describe("production safeguards", () => {
       retrySafePaperEntries: true,
     });
   });
+
+  it("serves the App Store privacy and support pages at stable extensionless URLs", async () => {
+    const privacy = await fetch(base + "/privacy");
+    const support = await fetch(base + "/support");
+
+    expect(privacy.status).toBe(200);
+    expect(privacy.headers.get("content-type")).toContain("text/html");
+    expect(await privacy.text()).toContain("Moonpaper Privacy Policy");
+    expect(support.status).toBe(200);
+    expect(support.headers.get("content-type")).toContain("text/html");
+    expect(await support.text()).toContain("Moonpaper Support");
+  });
 });

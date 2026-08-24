@@ -1437,7 +1437,7 @@ export function createApp(deps: AppDeps): Express {
   // maxAge 0 + etag: the browser may cache, but must revalidate every time.
   // Without this it heuristically caches app.js and serves a stale build
   // after a deploy, which is indistinguishable from a broken release.
-  const staticOptions = { maxAge: 0, etag: true, lastModified: true };
+  const staticOptions = { maxAge: 0, etag: true, lastModified: true, extensions: ["html"] };
   app.use("/demo", express.static(join(rootDir, "demo"), staticOptions));
   app.use("/", express.static(join(rootDir, "web"), staticOptions));
 

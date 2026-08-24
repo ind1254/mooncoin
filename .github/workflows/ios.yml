@@ -1,0 +1,38 @@
+name: iOS
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "ios/Moonpaper/**"
+      - ".github/workflows/ios.yml"
+  pull_request:
+    paths:
+      - "ios/Moonpaper/**"
+      - ".github/workflows/ios.yml"
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: ios/Moonpaper
+        run: xcodegen generate
+
+      - name: Compile app and tests
+        working-directory: ios/Moonpaper
+        run: >-
+          xcodebuild
+          -project Moonpaper.xcodeproj
+          -scheme Moonpaper
+          -sdk iphonesimulator
+          -destination 'generic/platform=iOS Simulator'
+          -derivedDataPath "$RUNNER_TEMP/MoonpaperDerivedData"
+          CODE_SIGNING_ALLOWED=NO
+          build-for-testing
