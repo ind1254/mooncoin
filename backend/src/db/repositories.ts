@@ -319,6 +319,31 @@ export class UserRepository {
   }
 }
 
+/** Stable, database-pinned identity for a private single-owner deployment. */
+export class OwnerRepository {
+  constructor(private readonly db: SqlClient) {}
+
+  async get(): Promise<UserRecord | null> {
+    const rows = await this.db.query(
+      `select u.id, u.email, u.email_verified_at, u.created_at
+         from app_owner o
+         join users u on u.id = o.user_id
+        where o.singleton = true`,
+    );
+    return rows[0] ? toUser(rows[0]) : null;
+  }
+
+  /** Assigns the original account once; conflicts can never change the owner. */
+  async getOrAssignOldest(): Promise<UserRecord | null> {
+    await this.db.query(
+      `insert into app_owner (singleton, user_id)
+       select true, id from users order by created_at asc, id asc limit 1
+       on conflict (singleton) do nothing`,
+    );
+    return this.get();
+  }
+}
+
 /**
  * Sessions are stored as a SHA-256 of the token. The raw token lives only in
  * the user's cookie, so a database dump does not hand an attacker live logins.
@@ -1390,9 +1415,35 @@ export class PaperBotDecisionRepository {
          from paper_bot_decisions d
          join paper_bot_configs c on c.id = d.config_id
         where c.user_id = $1
-        order by d.created_at desc
+        order by d.created_at desc, d.id desc
         limit $2`,
       [userId, limit],
+    );
+    return rows.map(toPaperBotDecision);
+  }
+
+  /**
+   * Stable chronological polling window. UUID breaks ties when a worker writes
+   * more than one decision at the same millisecond.
+   */
+  async listForUserAfter(
+    userId: string,
+    afterCreatedAtMs: number,
+    afterId: string,
+    limit = 50,
+  ): Promise<PaperBotDecisionRecord[]> {
+    const rows = await this.db.query(
+      `select d.*
+         from paper_bot_decisions d
+         join paper_bot_configs c on c.id = d.config_id
+        where c.user_id = $1
+          and (
+            d.created_at > to_timestamp($2::double precision / 1000)
+            or (d.created_at = to_timestamp($2::double precision / 1000) and d.id > $3::uuid)
+          )
+        order by d.created_at asc, d.id asc
+        limit $4`,
+      [userId, afterCreatedAtMs, afterId, limit],
     );
     return rows.map(toPaperBotDecision);
   }

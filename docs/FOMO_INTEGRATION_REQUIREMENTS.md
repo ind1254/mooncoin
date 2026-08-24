@@ -1,8 +1,9 @@
 # FOMO Labs Integration Requirements
 
-**Status: BLOCKED — external dependency.** The arbitrage add-on runs fully in
-paper-trading mode against the mock backend today. Direct integration with the
-FOMO app cannot begin until FOMO Labs provides the items below.
+**Status: Moonpaper API ready; in-app embedding remains an external dependency.**
+Moonpaper now exposes an owner-authenticated, cursor-based paper-decision feed
+documented in `FOMO_SEQUENCE_API.md`. Direct embedding in the FOMO app still
+requires FOMO Labs to provide the items below.
 
 `FomoLabsIntegrationAdapter` (in `ios/ArbitrageAddOn/FomoIntegrationAdapter.swift`)
 is intentionally **unimplemented** and fails loudly until then. All calculation,

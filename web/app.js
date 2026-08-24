@@ -118,6 +118,7 @@
     authenticated: false,
     user: null,
     accountsEnabled: true,
+    ownerMode: false,
     emailVerificationRequired: false,
     emailDeliveryConfigured: false,
   };
@@ -128,6 +129,7 @@
       session.authenticated = body.authenticated;
       session.user = body.user;
       session.accountsEnabled = body.accountsEnabled !== false;
+      session.ownerMode = body.ownerMode === true;
       session.emailVerificationRequired = body.emailVerificationRequired === true;
       session.emailDeliveryConfigured = body.emailDeliveryConfigured === true;
     } catch {
@@ -154,12 +156,12 @@
       ? `<div class="account-chip" title="${esc(session.user.email)}">
            <span class="avatar">${esc((session.user.email || "?")[0].toUpperCase())}</span>
            ${session.emailVerificationRequired && session.user.emailVerified === false ? `<button class="verify-pill" id="resendVerifyBtn" title="Send a new verification email">verify email</button>` : ""}
-           <button class="linkbtn" id="signOutBtn">Sign out</button>
+           <button class="linkbtn" id="signOutBtn">${session.ownerMode ? "Lock" : "Sign out"}</button>
          </div>`
-      : `<button class="btn" id="signInBtn" style="padding:7px 14px;font-size:13px">Sign in</button>`;
+      : `<button class="btn" id="signInBtn" style="padding:7px 14px;font-size:13px">${session.ownerMode ? "Owner access" : "Sign in"}</button>`;
 
     const signIn = $("signInBtn");
-    if (signIn) signIn.addEventListener("click", () => openAuthModal("signin"));
+    if (signIn) signIn.addEventListener("click", openAccessModal);
     const signOut = $("signOutBtn");
     const resend = $("resendVerifyBtn");
     if (resend) resend.addEventListener("click", resendVerification);
@@ -169,9 +171,70 @@
         session.authenticated = false;
         session.user = null;
         renderAccountArea();
-        toast("Signed out");
+        toast(session.ownerMode ? "Moonpaper locked" : "Signed out");
         render();
       });
+  }
+
+  function openAccessModal() {
+    if (session.ownerMode) return openOwnerAccessModal();
+    openAuthModal("signin");
+  }
+
+  /**
+   * The owner key is sent once and exchanged for an httpOnly session cookie.
+   * It is never written to localStorage, sessionStorage, a URL, or the DOM
+   * after the request completes.
+   */
+  function openOwnerAccessModal() {
+    showModal(`
+      <h3>Unlock Moonpaper</h3>
+      <div class="tiny muted" style="margin-top:4px">This deployment has one owner. Enter your private owner key to open Bot Lab, portfolio, and watchlist.</div>
+      <div id="ownerAccessErr" class="error-box hidden"></div>
+      <label class="field" style="margin-top:12px">OWNER ACCESS KEY</label>
+      <input type="password" id="ownerAccessKey" autocomplete="current-password" spellcheck="false" placeholder="Paste your private key">
+      <div class="actions">
+        <button class="btn secondary" data-close>Cancel</button>
+        <button class="btn" id="ownerAccessSubmit">Unlock</button>
+      </div>
+      <div class="sim-notice">The key unlocks paper-trading controls only. Moonpaper still cannot build, sign, or submit a real transaction.</div>
+    `);
+
+    const submit = async () => {
+      const keyInput = $("ownerAccessKey");
+      const key = keyInput.value;
+      const error = $("ownerAccessErr");
+      const button = $("ownerAccessSubmit");
+      error.classList.add("hidden");
+      button.disabled = true;
+      button.textContent = "Unlocking…";
+      try {
+        const body = await api("/v1/owner/unlock", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${key}` },
+        });
+        keyInput.value = "";
+        session.authenticated = true;
+        session.user = body.user;
+        closeModal();
+        renderAccountArea();
+        toast("Owner access unlocked", "ok");
+        render();
+      } catch (e) {
+        keyInput.value = "";
+        error.textContent = e.message;
+        error.classList.remove("hidden");
+        button.disabled = false;
+        button.textContent = "Unlock";
+        keyInput.focus();
+      }
+    };
+
+    $("ownerAccessSubmit").addEventListener("click", submit);
+    $("ownerAccessKey").addEventListener("keydown", (event) => {
+      if (event.key === "Enter") submit();
+    });
+    $("ownerAccessKey").focus();
   }
 
   function openAuthModal(mode) {
@@ -297,6 +360,14 @@
 
   /** Shown wherever a personal feature needs an account. */
   function signInPrompt(what) {
+    if (session.ownerMode) {
+      return `
+        <div class="empty">
+          <div style="font-size:15px;font-weight:700;color:var(--text);margin-bottom:6px">Unlock ${esc(what)}</div>
+          <div style="max-width:420px;margin:0 auto 14px">This is your private Moonpaper deployment. Use the owner key once; the browser keeps only a secure session cookie.</div>
+          <button class="btn" id="promptSignIn">Owner access</button>
+        </div>`;
+    }
     return `
       <div class="empty">
         <div style="font-size:15px;font-weight:700;color:var(--text);margin-bottom:6px">Sign in to use ${esc(what)}</div>
@@ -307,7 +378,7 @@
 
   function wireSignInPrompt() {
     const b = $("promptSignIn");
-    if (b) b.addEventListener("click", () => openAuthModal("signup"));
+    if (b) b.addEventListener("click", openAccessModal);
   }
   window.addEventListener("hashchange", () => {
     state.route = parseHash();
@@ -402,7 +473,7 @@
   }
 
   function openLivePaperTradeModal(token, amountUsd, report) {
-    if (!session.authenticated) return openAuthModal("signup");
+    if (!session.authenticated) return openAccessModal();
     if (!livePaperReportIsUsable(report)) {
       return toast("Run a fresh eligible production check before reviewing this paper entry.", "error");
     }
@@ -1002,7 +1073,7 @@
     });
     div.querySelector(".star").addEventListener("click", async (event) => {
       if (!session.authenticated) {
-        openAuthModal("signup");
+        openAccessModal();
         event.stopPropagation();
         return;
       }
@@ -1257,7 +1328,7 @@
     container.querySelector("#backBtn").addEventListener("click", () => (location.hash = "#/"));
 
     container.querySelector("#watchBtn").addEventListener("click", async () => {
-      if (!session.authenticated) return openAuthModal("signup");
+      if (!session.authenticated) return openAccessModal();
       try {
         await post("/v1/me/watchlist", { tokenMint: d.mint });
         toast(`${d.symbol} added to your watchlist`, "ok");
@@ -2263,7 +2334,7 @@
           session.authenticated = false;
           session.user = null;
           renderAccountArea();
-          openAuthModal("signin");
+          openAccessModal();
           toast("Password updated — sign in again", "ok");
           render();
         } catch (error) {

@@ -37,6 +37,8 @@ export interface AuthProvider {
   signIn(email: string, password: string): Promise<AuthSession>;
   signOut(token: string): Promise<void>;
   verify(token: string): Promise<AuthenticatedUser | null>;
+  /** Called only after the server has verified the deployment's owner key. */
+  issueTrustedSessionForUserId(userId: string): Promise<AuthSession | null>;
 }
 
 export const credentialsSchema = z.object({
@@ -109,6 +111,11 @@ export class PasswordAuthProvider implements AuthProvider {
     if (!token) return null;
     const user = await this.sessions.findValidUser(token, this.clock());
     return user ? this.toAuthenticatedUser(user) : null;
+  }
+
+  async issueTrustedSessionForUserId(userId: string): Promise<AuthSession | null> {
+    const user = await this.users.findById(userId);
+    return user ? this.issueSession(user) : null;
   }
 
   private async issueSession(user: UserRecord): Promise<AuthSession> {

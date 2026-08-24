@@ -43,6 +43,18 @@ always explain *why* they fired (with cooldowns and material-change gates).
   idempotency key, bot position limits, cooldowns, idempotent request IDs, and a
   one-open-mint constraint keep duplicate or concurrent deliveries from
   double-opening a trade.
+- A private, cursor-based FOMO sequence API exposes the same decision audit to
+  an owner-controlled client. See [docs/FOMO_SEQUENCE_API.md](docs/FOMO_SEQUENCE_API.md).
+
+## Single-owner access
+
+Production can set a high-entropy `OWNER_API_KEY` to replace public
+email/password entry with one private owner unlock. Migration 009 permanently
+pins the oldest existing Moonpaper account as owner, preserving its Bot Lab
+history. The browser exchanges
+the key for an HttpOnly session cookie and never keeps it in web storage. Direct
+clients can use the key as a bearer token on all private APIs. Existing owner sessions
+continue to work; anonymous users still cannot read or control Bot Lab.
 
 ## Production safeguards (Part 4)
 
@@ -176,10 +188,12 @@ POST /v1/auth/forgot-password       {email}
 POST /v1/auth/reset-password        {token, password}
 POST /v1/auth/verify-email          {token}
 POST /v1/auth/resend-verification
+POST /v1/owner/unlock             Authorization: Bearer <owner-key>
 GET  /v1/me
 GET  /v1/me/portfolio
 GET  /v1/me/paper-bot              (strategy, worker status, decision audit)
 PUT  /v1/me/paper-bot              (enable/disable and bounded strategy settings)
+GET  /v1/integrations/fomo/sequences ?cursor&limit (owner-only paper decisions)
 POST /v1/me/paper/positions         {clientRequestId, tokenMint, amountUsd, slippageBps?}
 POST /v1/me/paper/positions/:id/close {slippageBps?}
 GET  /v1/opportunities              ?tradeSizeSol&risk&minLiquidityUsd&search

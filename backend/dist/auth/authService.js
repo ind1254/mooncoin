@@ -57,6 +57,10 @@ export class PasswordAuthProvider {
         const user = await this.sessions.findValidUser(token, this.clock());
         return user ? this.toAuthenticatedUser(user) : null;
     }
+    async issueTrustedSessionForUserId(userId) {
+        const user = await this.users.findById(userId);
+        return user ? this.issueSession(user) : null;
+    }
     async issueSession(user) {
         // 256 bits of entropy: not guessable, and opaque so it carries no claims
         // that could be tampered with.

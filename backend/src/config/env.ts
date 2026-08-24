@@ -9,6 +9,7 @@ const emptyToUndefined = (value: unknown): unknown =>
   typeof value === "string" && value.trim() === "" ? undefined : value;
 const optionalNonempty = z.preprocess(emptyToUndefined, z.string().min(1).optional());
 const optionalSecret = z.preprocess(emptyToUndefined, z.string().min(16).max(512).optional());
+const optionalOwnerSecret = z.preprocess(emptyToUndefined, z.string().min(32).max(512).optional());
 
 const envSchema = z.object({
   PORT: z.coerce.number().int().min(1).max(65535).default(8787),
@@ -70,6 +71,14 @@ const envSchema = z.object({
   ALERT_INTERVAL_MS: z.coerce.number().int().min(15_000).max(3_600_000).default(60_000),
   /** Vercel automatically sends this bearer secret to the scheduled worker route. */
   CRON_SECRET: optionalSecret,
+  /**
+   * Single-owner access. When configured, the oldest existing account is
+   * pinned as owner and this bearer key opens every private API route.
+   */
+  OWNER_API_KEY: optionalOwnerSecret,
+  /** Durable budget for owner-authenticated integration polling. */
+  INTEGRATION_RATE_LIMIT_ATTEMPTS: z.coerce.number().int().min(1).max(100_000).default(120),
+  INTEGRATION_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().min(1_000).max(3_600_000).default(60_000),
   /** How long a signed-in session lasts. */
   SESSION_TTL_DAYS: z.coerce.number().int().min(1).max(365).default(30),
   /** Public, canonical origin used in emailed links. Never inferred from Host. */

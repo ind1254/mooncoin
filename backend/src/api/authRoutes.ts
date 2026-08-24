@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import express, { type Request, type Response, type Router } from "express";
 import { z } from "zod";
 import { asArbError, ArbError } from "../core/errors.js";
@@ -10,6 +11,7 @@ import {
   PortfolioRepository,
   PaperBotConfigRepository,
   PaperBotDecisionRepository,
+  OwnerRepository,
   RateLimitRepository,
   WatchlistRepository,
   type RateLimitResult,
@@ -27,6 +29,10 @@ import type { PaperBotConfigRecord, PaperBotDecisionRecord } from "../bot/types.
  */
 
 export const SESSION_COOKIE = "mp_session";
+
+export interface OwnerAccessConfig {
+  apiKey: string;
+}
 
 /**
  * One message for every persistence outage. It names what is broken and what
@@ -50,7 +56,11 @@ export interface AuthRoutesOptions {
     authNetworkAttempts: number;
     paperAttempts: number;
     paperWindowMs: number;
+    integrationAttempts: number;
+    integrationWindowMs: number;
   };
+  /** When present, password entry is disabled and this one owner key is used. */
+  ownerAccess?: OwnerAccessConfig;
   /** Set Secure on cookies. Off for plain-HTTP local development. */
   secureCookies: boolean;
   /** Personal writes are blocked for unverified accounts when enabled. */
@@ -93,12 +103,36 @@ function clearSessionCookie(res: Response, secure: boolean): void {
   res.setHeader("Set-Cookie", attributes.join("; "));
 }
 
+/** Exact constant-time bearer comparison. Missing and short keys fail closed. */
+export function isAuthorizedOwnerRequest(authorization: string | undefined, apiKey: string | undefined): boolean {
+  if (!authorization || !apiKey || apiKey.length < 32) return false;
+  const actual = Buffer.from(authorization, "utf8");
+  const expected = Buffer.from(`Bearer ${apiKey}`, "utf8");
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
+
 /** Resolves the caller, or null when anonymous. Never throws. */
-export async function resolveUser(req: Request, auth: AuthProvider): Promise<AuthenticatedUser | null> {
+export async function resolveUser(
+  req: Request,
+  auth: AuthProvider,
+  db?: SqlClient,
+  ownerAccess?: OwnerAccessConfig,
+): Promise<AuthenticatedUser | null> {
   const token = readCookie(req, SESSION_COOKIE);
-  if (!token) return null;
   try {
-    return await auth.verify(token);
+    if (token) {
+      const sessionUser = await auth.verify(token);
+      const designatedOwner = ownerAccess && db ? await new OwnerRepository(db).get() : null;
+      const isDesignatedOwner = !ownerAccess || sessionUser?.id === designatedOwner?.id;
+      if (sessionUser && isDesignatedOwner) return sessionUser;
+    }
+    if (db && ownerAccess && isAuthorizedOwnerRequest(req.headers.authorization, ownerAccess.apiKey)) {
+      const owner = await new OwnerRepository(db).getOrAssignOldest();
+      return owner
+        ? { id: owner.id, email: owner.email, emailVerified: owner.emailVerifiedAtMs !== null }
+        : null;
+    }
+    return null;
   } catch {
     return null;
   }
@@ -132,6 +166,7 @@ export function createAuthRouter(options: AuthRoutesOptions): Router {
     startingMicroUsd,
     secureCookies,
     emailVerificationRequired,
+    ownerAccess,
     clock,
     rateLimits,
   } = options;
@@ -201,9 +236,12 @@ export function createAuthRouter(options: AuthRoutesOptions): Router {
       });
       return;
     }
-    const user = await resolveUser(req, auth);
+    const user = await resolveUser(req, auth, getDb(), ownerAccess);
     if (!user) {
-      res.status(401).json({ error: "UNAUTHORIZED", message: "Sign in to access this." });
+      res.status(401).json({
+        error: "UNAUTHORIZED",
+        message: ownerAccess ? "A valid Moonpaper owner key is required." : "Sign in to access this.",
+      });
       return;
     }
     res.locals.user = user;
@@ -214,7 +252,8 @@ export function createAuthRouter(options: AuthRoutesOptions): Router {
   const paperTrading = (): LivePaperTradingService => createPaperTrading(getDb()!);
 
   const requireVerified = (_req: Request, res: Response, next: express.NextFunction): void => {
-    if (emailVerificationRequired && !currentUser(res).emailVerified) {
+    const designatedOwner = Boolean(ownerAccess);
+    if (emailVerificationRequired && !currentUser(res).emailVerified && !designatedOwner) {
       res.status(403).json({
         error: "EMAIL_VERIFICATION_REQUIRED",
         message: "Verify your email before changing your paper portfolio or watchlist.",
@@ -262,9 +301,103 @@ export function createAuthRouter(options: AuthRoutesOptions): Router {
     createdAtMs: decision.createdAtMs,
   });
 
+  const sequenceActions: Record<PaperBotDecisionRecord["action"], string> = {
+    opened: "paper_buy",
+    closed: "paper_sell",
+    entry_rejected: "paper_skip",
+    exit_unavailable: "paper_hold",
+    scan_empty: "paper_scan_empty",
+    error: "paper_error",
+  };
+
+  const encodeSequenceCursor = (decision: PaperBotDecisionRecord): string =>
+    Buffer.from(`${decision.createdAtMs}:${decision.id}`, "utf8").toString("base64url");
+
+  const decodeSequenceCursor = (cursor: string): { createdAtMs: number; id: string } => {
+    let value = "";
+    try {
+      value = Buffer.from(cursor, "base64url").toString("utf8");
+    } catch {
+      // Parsed by the strict check below.
+    }
+    const separator = value.indexOf(":");
+    const parsed = z.object({
+      createdAtMs: z.coerce.number().int().min(0).max(9_007_199_254_740_991),
+      id: z.string().uuid(),
+    }).safeParse({ createdAtMs: value.slice(0, separator), id: value.slice(separator + 1) });
+    if (separator < 1 || !parsed.success) {
+      throw new ArbError("VALIDATION_ERROR", "The sequence cursor is invalid.", 400);
+    }
+    return parsed.data;
+  };
+
+  const serializeFomoSequence = (
+    decision: PaperBotDecisionRecord,
+    config: PaperBotConfigRecord,
+  ): Record<string, unknown> => ({
+    sequenceId: decision.id,
+    idempotencyKey: decision.id,
+    occurredAtMs: decision.createdAtMs,
+    chain: "solana",
+    cluster: "mainnet-beta",
+    tokenMint: decision.tokenMint,
+    tokenSymbol: decision.tokenSymbol,
+    action: sequenceActions[decision.action],
+    decisionAction: decision.action,
+    tradeSizeUsd: microToUsdString(config.tradeSizeMicroUsd),
+    qualityScore: decision.qualityScore,
+    riskScore: decision.riskScore,
+    reason: decision.reason,
+    positionId: decision.positionId,
+    evidence: decision.snapshot,
+    source: `moonpaper-${config.strategyVersion}`,
+    mode: "paper",
+    simulated: true,
+    executionEnabled: false,
+  });
+
+  const passwordEntryAllowed = (_req: Request, res: Response, next: express.NextFunction): void => {
+    if (ownerAccess) {
+      res.status(403).json({
+        error: "FORBIDDEN",
+        message: "Password sign-up and sign-in are disabled on this single-owner deployment.",
+      });
+      return;
+    }
+    next();
+  };
+
   // ---- Identity ----
 
-  router.post("/v1/auth/signup", requirePersistence, async (req, res) => {
+  router.post("/v1/owner/unlock", requirePersistence, async (req, res) => {
+    try {
+      await consumeLimit(
+        res,
+        "owner:network",
+        req.ip ?? req.socket.remoteAddress ?? "unresolved-network",
+        rateLimits.authNetworkAttempts,
+        rateLimits.authWindowMs,
+      );
+      if (!ownerAccess || !isAuthorizedOwnerRequest(req.headers.authorization, ownerAccess.apiKey)) {
+        throw new ArbError("UNAUTHORIZED", "The owner access key is incorrect.", 401);
+      }
+      const owner = await new OwnerRepository(getDb()!).getOrAssignOldest();
+      const session = owner ? await getAuth()!.issueTrustedSessionForUserId(owner.id) : null;
+      if (!session) {
+        throw new ArbError(
+          "DATABASE_ERROR",
+          "The owner account does not exist yet. Create the initial Moonpaper account before enabling owner mode.",
+          503,
+        );
+      }
+      setSessionCookie(res, session.token, session.expiresAtMs, secureCookies);
+      res.json({ user: session.user, ownerMode: true });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  router.post("/v1/auth/signup", passwordEntryAllowed, requirePersistence, async (req, res) => {
     try {
       const parsed = credentialsSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -313,7 +446,7 @@ export function createAuthRouter(options: AuthRoutesOptions): Router {
     }
   });
 
-  router.post("/v1/auth/signin", requirePersistence, async (req, res) => {
+  router.post("/v1/auth/signin", passwordEntryAllowed, requirePersistence, async (req, res) => {
     try {
       const parsed = credentialsSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -366,7 +499,7 @@ export function createAuthRouter(options: AuthRoutesOptions): Router {
     }
     let user: AuthenticatedUser | null = null;
     try {
-      user = await resolveUser(req, auth);
+      user = await resolveUser(req, auth, getDb(), ownerAccess);
     } catch {
       res.json({ authenticated: false, user: null, accountsEnabled: false });
       return;
@@ -374,6 +507,7 @@ export function createAuthRouter(options: AuthRoutesOptions): Router {
     res.json({
       authenticated: user !== null,
       accountsEnabled: true,
+      ownerMode: Boolean(ownerAccess),
       emailVerificationRequired,
       emailDeliveryConfigured: getAccountLifecycle()?.deliveryConfigured ?? false,
       user,
@@ -383,7 +517,7 @@ export function createAuthRouter(options: AuthRoutesOptions): Router {
   const emailSchema = z.object({ email: z.string().email().max(254) });
   const actionTokenSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
 
-  router.post("/v1/auth/forgot-password", requirePersistence, async (req, res) => {
+  router.post("/v1/auth/forgot-password", passwordEntryAllowed, requirePersistence, async (req, res) => {
     const startedAt = Date.now();
     try {
       const parsed = emailSchema.safeParse(req.body);
@@ -430,7 +564,7 @@ export function createAuthRouter(options: AuthRoutesOptions): Router {
     }
   });
 
-  router.post("/v1/auth/verify-email", requirePersistence, async (req, res) => {
+  router.post("/v1/auth/verify-email", passwordEntryAllowed, requirePersistence, async (req, res) => {
     try {
       const parsed = z.object({ token: actionTokenSchema }).safeParse(req.body);
       if (!parsed.success || !getAccountLifecycle()) {
@@ -443,7 +577,7 @@ export function createAuthRouter(options: AuthRoutesOptions): Router {
     }
   });
 
-  router.post("/v1/auth/resend-verification", requireAuth, async (_req, res) => {
+  router.post("/v1/auth/resend-verification", passwordEntryAllowed, requireAuth, async (_req, res) => {
     try {
       await consumeLimit(
         res,
@@ -462,7 +596,7 @@ export function createAuthRouter(options: AuthRoutesOptions): Router {
     }
   });
 
-  router.post("/v1/auth/reset-password", requirePersistence, async (req, res) => {
+  router.post("/v1/auth/reset-password", passwordEntryAllowed, requirePersistence, async (req, res) => {
     try {
       const parsed = z
         .object({ token: actionTokenSchema, password: z.string().min(10).max(200) })
@@ -548,6 +682,54 @@ export function createAuthRouter(options: AuthRoutesOptions): Router {
         decisions: decisions.map(serializeBotDecision),
         notice:
           "The shadow bot can only open and close virtual positions. It never builds, signs, or submits a transaction.",
+      });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  /**
+   * Integration boundary for FOMO or another owner-controlled client. This is
+   * an auditable decision feed, not a wallet or transaction-signing API.
+   */
+  router.get("/v1/integrations/fomo/sequences", requireAuth, async (req, res) => {
+    try {
+      const parsed = z.object({
+        cursor: z.string().min(1).max(256).optional(),
+        limit: z.coerce.number().int().min(1).max(100).default(50),
+      }).safeParse(req.query);
+      if (!parsed.success) {
+        throw new ArbError("VALIDATION_ERROR", "Use a valid sequence cursor and a limit from 1 to 100.", 400);
+      }
+
+      const user = currentUser(res);
+      await consumeLimit(
+        res,
+        "integration:sequence-reads",
+        user.id,
+        rateLimits.integrationAttempts,
+        rateLimits.integrationWindowMs,
+      );
+      const configs = new PaperBotConfigRepository(getDb()!);
+      const config = await configs.ensureDefault(user.id, clock());
+      const decisions = new PaperBotDecisionRepository(getDb()!);
+      const cursor = parsed.data.cursor ? decodeSequenceCursor(parsed.data.cursor) : null;
+      const page = cursor
+        ? await decisions.listForUserAfter(user.id, cursor.createdAtMs, cursor.id, parsed.data.limit)
+        : (await decisions.listForUser(user.id, parsed.data.limit)).reverse();
+      const last = page.at(-1);
+
+      res.json({
+        integration: "fomo",
+        schemaVersion: "2026-08-24",
+        mode: "paper",
+        simulated: true,
+        executionEnabled: false,
+        botEnabled: config.enabled,
+        strategyVersion: config.strategyVersion,
+        pollAfterMs: 60_000,
+        sequences: page.map((decision) => serializeFomoSequence(decision, config)),
+        nextCursor: last ? encodeSequenceCursor(last) : (parsed.data.cursor ?? null),
       });
     } catch (err) {
       fail(res, err);

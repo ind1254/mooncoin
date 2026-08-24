@@ -585,7 +585,10 @@ export function createApp(deps) {
         if (deps.env.COOKIE_SECURE) {
             res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
         }
-        if (req.path.startsWith("/v1/auth") || req.path.startsWith("/v1/me")) {
+        if (req.path.startsWith("/v1/auth") ||
+            req.path.startsWith("/v1/me") ||
+            req.path.startsWith("/v1/owner") ||
+            req.path.startsWith("/v1/integrations")) {
             res.setHeader("Cache-Control", "no-store");
         }
         next();
@@ -1223,7 +1226,12 @@ export function createApp(deps) {
             authNetworkAttempts: deps.env.AUTH_RATE_LIMIT_NETWORK_ATTEMPTS,
             paperAttempts: deps.env.PAPER_RATE_LIMIT_ATTEMPTS,
             paperWindowMs: deps.env.PAPER_RATE_LIMIT_WINDOW_MS,
+            integrationAttempts: deps.env.INTEGRATION_RATE_LIMIT_ATTEMPTS,
+            integrationWindowMs: deps.env.INTEGRATION_RATE_LIMIT_WINDOW_MS,
         },
+        ...(deps.env.OWNER_API_KEY
+            ? { ownerAccess: { apiKey: deps.env.OWNER_API_KEY } }
+            : {}),
         secureCookies: deps.env.COOKIE_SECURE,
         emailVerificationRequired: deps.env.EMAIL_VERIFICATION_REQUIRED,
     }));
