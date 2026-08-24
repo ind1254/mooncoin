@@ -69,6 +69,19 @@ async function call(
 }
 
 describe("single-owner access", () => {
+  it("pins an explicitly enabled Bot Lab account ahead of an older inactive account", async () => {
+    const active = await new UserRepository(db).create("active-owner@moonpaper.test", "unused", NOW + 1_000);
+    await db.query("insert into paper_bot_configs (user_id, enabled) values ($1, true)", [active.id]);
+
+    const direct = await call("GET", "/v1/me", { bearer: OWNER_KEY });
+    expect(direct.status).toBe(200);
+    expect(direct.body).toMatchObject({
+      authenticated: true,
+      ownerMode: true,
+      user: { id: active.id, email: active.email },
+    });
+  });
+
   it("disables password entry and accepts the owner bearer key on private APIs", async () => {
     expect((await call("POST", "/v1/auth/signup", {
       body: { email: "new@example.com", password: "correct horse battery" },

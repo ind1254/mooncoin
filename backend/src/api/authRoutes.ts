@@ -127,7 +127,7 @@ export async function resolveUser(
       if (sessionUser && isDesignatedOwner) return sessionUser;
     }
     if (db && ownerAccess && isAuthorizedOwnerRequest(req.headers.authorization, ownerAccess.apiKey)) {
-      const owner = await new OwnerRepository(db).getOrAssignOldest();
+      const owner = await new OwnerRepository(db).getOrAssign();
       return owner
         ? { id: owner.id, email: owner.email, emailVerified: owner.emailVerifiedAtMs !== null }
         : null;
@@ -381,7 +381,7 @@ export function createAuthRouter(options: AuthRoutesOptions): Router {
       if (!ownerAccess || !isAuthorizedOwnerRequest(req.headers.authorization, ownerAccess.apiKey)) {
         throw new ArbError("UNAUTHORIZED", "The owner access key is incorrect.", 401);
       }
-      const owner = await new OwnerRepository(getDb()!).getOrAssignOldest();
+      const owner = await new OwnerRepository(getDb()!).getOrAssign();
       const session = owner ? await getAuth()!.issueTrustedSessionForUserId(owner.id) : null;
       if (!session) {
         throw new ArbError(

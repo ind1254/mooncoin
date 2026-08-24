@@ -7,10 +7,11 @@ key, or real-order capability.
 
 ## Production access
 
-Configure `OWNER_API_KEY`. Migration 009 pins the oldest existing Moonpaper
-account as the owner so its Bot Lab history is preserved. The key must be at
-least 32 characters and should be generated from a cryptographically secure
-random source.
+Configure `OWNER_API_KEY`. Migrations 009-010 pin the existing account with an
+enabled Bot Lab strategy as owner, falling back to the oldest account when none
+is enabled, so active history is preserved. The key must be at least 32
+characters and should be generated from a cryptographically secure random
+source.
 
 When the variable exists:
 

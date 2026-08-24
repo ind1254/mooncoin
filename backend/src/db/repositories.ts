@@ -333,11 +333,15 @@ export class OwnerRepository {
     return rows[0] ? toUser(rows[0]) : null;
   }
 
-  /** Assigns the original account once; conflicts can never change the owner. */
-  async getOrAssignOldest(): Promise<UserRecord | null> {
+  /** Assigns the enabled-bot account when present, otherwise the original account. */
+  async getOrAssign(): Promise<UserRecord | null> {
     await this.db.query(
       `insert into app_owner (singleton, user_id)
-       select true, id from users order by created_at asc, id asc limit 1
+       select true, u.id
+         from users u
+         left join paper_bot_configs c on c.user_id = u.id
+        order by coalesce(c.enabled, false) desc, u.created_at asc, u.id asc
+        limit 1
        on conflict (singleton) do nothing`,
     );
     return this.get();

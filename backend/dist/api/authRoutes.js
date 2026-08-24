@@ -76,7 +76,7 @@ export async function resolveUser(req, auth, db, ownerAccess) {
                 return sessionUser;
         }
         if (db && ownerAccess && isAuthorizedOwnerRequest(req.headers.authorization, ownerAccess.apiKey)) {
-            const owner = await new OwnerRepository(db).getOrAssignOldest();
+            const owner = await new OwnerRepository(db).getOrAssign();
             return owner
                 ? { id: owner.id, email: owner.email, emailVerified: owner.emailVerifiedAtMs !== null }
                 : null;
@@ -286,7 +286,7 @@ export function createAuthRouter(options) {
             if (!ownerAccess || !isAuthorizedOwnerRequest(req.headers.authorization, ownerAccess.apiKey)) {
                 throw new ArbError("UNAUTHORIZED", "The owner access key is incorrect.", 401);
             }
-            const owner = await new OwnerRepository(getDb()).getOrAssignOldest();
+            const owner = await new OwnerRepository(getDb()).getOrAssign();
             const session = owner ? await getAuth().issueTrustedSessionForUserId(owner.id) : null;
             if (!session) {
                 throw new ArbError("DATABASE_ERROR", "The owner account does not exist yet. Create the initial Moonpaper account before enabling owner mode.", 503);

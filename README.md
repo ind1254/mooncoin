@@ -49,9 +49,9 @@ always explain *why* they fired (with cooldowns and material-change gates).
 ## Single-owner access
 
 Production can set a high-entropy `OWNER_API_KEY` to replace public
-email/password entry with one private owner unlock. Migration 009 permanently
-pins the oldest existing Moonpaper account as owner, preserving its Bot Lab
-history. The browser exchanges
+email/password entry with one private owner unlock. Migrations 009-010 pin the
+account with an explicitly enabled Bot Lab strategy, or the oldest account when
+none is enabled, preserving the active account's history. The browser exchanges
 the key for an HttpOnly session cookie and never keeps it in web storage. Direct
 clients can use the key as a bearer token on all private APIs. Existing owner sessions
 continue to work; anonymous users still cannot read or control Bot Lab.
