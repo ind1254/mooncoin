@@ -2,7 +2,8 @@
 
 *Practice the moonshot — risk nothing.*
 
-A live-research and paper-trading MVP for Solana meme-coin traders. It answers one question:
+A live-research and paper-trading application with a key-free handoff to FOMO
+for real execution. It answers one question:
 **"Based on current market conditions, what deserves my attention, what are the
 risks, and what would happen if I paper-traded it?"**
 
@@ -11,7 +12,9 @@ risks, and what would happen if I paper-traded it?"**
 > are held, and no private keys or seed phrases are ever requested or stored.
 > Scores describe current conditions and are **not** predictions of future
 > returns. The New and Trending feeds use live Jupiter catalog data; trading
-> remains simulation-only and the legacy simulator stays clearly labeled.
+> inside Moonpaper remains simulation-only and the legacy simulator stays
+> clearly labeled. Real trades are reviewed, authorized, and submitted by the
+> user inside FOMO, never by Moonpaper.
 
 ## The five pillars
 
@@ -25,6 +28,18 @@ risks, and what would happen if I paper-traded it?"**
 
 Plus: watchlist, user settings with sensible defaults, and in-app alerts that
 always explain *why* they fired (with cooldowns and material-change gates).
+
+## Real-trade handoff to FOMO
+
+New and Trending cards include **Trade on FOMO**, which opens FOMO's verified
+universal link with the token's immutable Solana mint and FOMO's Solana chain
+identifier. On a supported phone this opens the FOMO app; otherwise it opens
+FOMO's web token screen.
+
+Moonpaper does not pass a buy/sell side or amount, connect a wallet, receive a
+private key, build a transaction, or submit an order. The user must authenticate
+with FOMO and review the token, amount, fees, slippage, and final confirmation
+there. This keeps research and scoring separate from custody and execution.
 
 ## Shadow paper bot (Part 6)
 

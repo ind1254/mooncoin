@@ -1,8 +1,13 @@
-/* Moonpaper — live Solana research plus simulation-only trading. */
+/* Moonpaper — live Solana research, paper tools, and key-free FOMO handoff. */
 (() => {
   "use strict";
 
   // ---------- tiny helpers ----------
+  // FOMO's verified universal link maps this numeric chain identifier to
+  // Solana, then opens the immutable mint's token screen in its app or web UI.
+  // Moonpaper never passes an amount, side, wallet, or signing material.
+  const FOMO_COIN_URL = "https://fomo.family/coin";
+  const FOMO_SOLANA_CHAIN_ID = "1399811149";
   const $ = (id) => document.getElementById(id);
   const esc = (s) =>
     String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -21,6 +26,12 @@
     if (s < 3600) return `${Math.round(s / 60)}m ago`;
     if (s < 86400) return `${Math.round(s / 3600)}h ago`;
     return `${Math.round(s / 86400)}d ago`;
+  };
+  const fomoCoinUrl = (mint) => {
+    const url = new URL(FOMO_COIN_URL);
+    url.searchParams.set("address", String(mint).trim());
+    url.searchParams.set("chainId", FOMO_SOLANA_CHAIN_ID);
+    return url.toString();
   };
 
   function toast(message, kind = "") {
@@ -732,7 +743,7 @@
         <div class="search-panel hidden" id="searchPanel">
           <div id="searchResults" role="listbox" aria-label="Search results"></div>
         </div>
-        <div class="hero-note">Read-only research and paper trading. Moonpaper never connects a wallet, never asks for keys, and never submits a transaction.</div>
+        <div class="hero-note">Research and paper tools stay key-free. “Trade on FOMO” opens the selected mint in FOMO, where you review and authorize any real transaction.</div>
       </section>`;
   }
 
@@ -1003,6 +1014,7 @@
       : `<span aria-hidden="true">◉</span>`;
     const storedGateReport = state.gateReports.get(token.mint);
     const paperReady = livePaperReportIsUsable(storedGateReport);
+    const fomoUrl = fomoCoinUrl(token.mint);
 
     div.innerHTML = `
       <div class="opp-emoji token-icon">${icon}</div>
@@ -1032,12 +1044,11 @@
           <button class="star ${token.inWatchlist ? "active" : ""}" title="Watchlist" aria-label="Toggle watchlist">★</button>
           <button class="btn secondary sm-gates">${storedGateReport ? "Check again" : "Check $100 eligibility"}</button>
           <button class="btn sm-paper ${paperReady ? "" : "hidden"}">Paper buy $100</button>
-          <button class="btn sm-research">Research + live quote</button>
+          <a class="btn sm-fomo" href="${esc(fomoUrl)}" target="_blank" rel="noopener noreferrer" title="Open this exact Solana mint in FOMO; choose the amount and confirm there">Trade on FOMO ↗</a>
         </div>
       </div>
     `;
 
-    div.querySelector(".sm-research").addEventListener("click", () => (location.hash = `#/research/${token.mint}`));
     div.querySelector(".sm-gates").addEventListener("click", async (event) => {
       const button = event.currentTarget;
       const out = div.querySelector(".gate-check-out");

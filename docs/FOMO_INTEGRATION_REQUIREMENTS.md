@@ -1,9 +1,10 @@
 # FOMO Labs Integration Requirements
 
-**Status: Moonpaper API ready; in-app embedding remains an external dependency.**
+**Status: Moonpaper API and outbound token handoff ready; in-app embedding remains an external dependency.**
 Moonpaper now exposes an owner-authenticated, cursor-based paper-decision feed
-documented in `FOMO_SEQUENCE_API.md`. Direct embedding in the FOMO app still
-requires FOMO Labs to provide the items below.
+documented in `FOMO_SEQUENCE_API.md`. The web app can also open a selected
+Solana mint in FOMO through FOMO's verified public universal link. Direct
+embedding in the FOMO app still requires FOMO Labs to provide the items below.
 
 `FomoLabsIntegrationAdapter` (in `ios/ArbitrageAddOn/FomoIntegrationAdapter.swift`)
 is intentionally **unimplemented** and fails loudly until then. All calculation,
@@ -62,8 +63,14 @@ functionality is independent of FOMO and works without it.
 - [ ] Expected backoff behavior and error codes when throttled.
 
 ### 10. Deep-link support
-- [ ] URL scheme / universal links for opening a specific token screen in FOMO
-      (`openTokenInHostApp(mint:)` in the adapter).
+- [x] Outbound web handoff uses FOMO's verified universal link:
+      `https://fomo.family/coin?address=<mint>&chainId=1399811149`. FOMO's
+      Apple and Android association files claim the `/coin` path, and its
+      public web client maps that numeric chain ID to Solana. Verified
+      2026-08-24.
+- [ ] A supported native URL API for `openTokenInHostApp(mint:)` in the
+      standalone Swift adapter. The public HTTPS universal link can be used by
+      Moonpaper's web UI without claiming an embedded SDK contract.
 - [ ] Any inbound deep link the add-on should register to be opened from FOMO.
 
 ### 11. Legal and branding permission
