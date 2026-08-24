@@ -1475,3 +1475,72 @@ export class PaperBotPositionStateRepository {
     );
   }
 }
+
+export type WorkerLeaseCompletionStatus = "completed" | "degraded" | "failed";
+
+/**
+ * Cross-instance coordination for the scheduled worker.
+ *
+ * `tryAcquire` performs the lock and idempotency check in one atomic upsert.
+ * Keeping only the latest run key avoids an ever-growing one-row-per-minute
+ * event table while still rejecting duplicate deliveries for that run.
+ */
+export class WorkerLeaseRepository {
+  constructor(private readonly db: SqlClient) {}
+
+  async tryAcquire(
+    name: string,
+    ownerId: string,
+    runKey: string,
+    nowMs: number,
+    leaseMs: number,
+  ): Promise<boolean> {
+    const rows = await this.db.query(
+      `insert into worker_leases (
+         name, owner_id, last_run_key, lease_expires_at, started_at,
+         completed_at, last_status, last_summary, updated_at
+       ) values (
+         $1, $2, $3,
+         to_timestamp($4::double precision / 1000),
+         to_timestamp($5::double precision / 1000),
+         null, null, '{}'::jsonb,
+         to_timestamp($5::double precision / 1000)
+       )
+       on conflict (name) do update set
+         owner_id = excluded.owner_id,
+         last_run_key = excluded.last_run_key,
+         lease_expires_at = excluded.lease_expires_at,
+         started_at = excluded.started_at,
+         completed_at = null,
+         last_status = null,
+         last_summary = '{}'::jsonb,
+         updated_at = excluded.updated_at
+       where worker_leases.lease_expires_at <= excluded.started_at
+         and worker_leases.last_run_key < excluded.last_run_key
+       returning name`,
+      [name, ownerId, runKey, nowMs + leaseMs, nowMs],
+    );
+    return rows.length === 1;
+  }
+
+  async complete(
+    name: string,
+    ownerId: string,
+    status: WorkerLeaseCompletionStatus,
+    summary: Record<string, unknown>,
+    nowMs: number,
+  ): Promise<boolean> {
+    const rows = await this.db.query(
+      `update worker_leases set
+         lease_expires_at = to_timestamp($4::double precision / 1000),
+         completed_at = to_timestamp($4::double precision / 1000),
+         last_status = $3,
+         last_summary = $5::jsonb,
+         updated_at = to_timestamp($4::double precision / 1000)
+       where name = $1 and owner_id = $2
+       returning name`,
+      [name, ownerId, status, nowMs, JSON.stringify(summary)],
+    );
+    return rows.length === 1;
+  }
+}

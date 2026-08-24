@@ -39,8 +39,10 @@ always explain *why* they fired (with cooldowns and material-change gates).
   than filled from a chart or invented price.
 - Opens, closes, exact-gate rejections, unavailable exits, and worker errors are
   persisted in a per-user audit trail visible in **Bot Lab**.
-- Database locks, bot position limits, cooldowns, idempotent request IDs, and a
-  one-open-mint constraint keep concurrent workers from double-opening a trade.
+- Vercel Cron invokes one bounded pass per minute. A database lease, per-minute
+  idempotency key, bot position limits, cooldowns, idempotent request IDs, and a
+  one-open-mint constraint keep duplicate or concurrent deliveries from
+  double-opening a trade.
 
 ## Production safeguards (Part 4)
 
@@ -129,6 +131,7 @@ backend/src/
   scoring/              Transparent rule-based scores (0-100) with stored factors
   paper/                Deterministic demo engine plus live-quote paper service
   bot/                  Opt-in shadow strategy + persistent worker pass; paper only
+  worker/               Shared one-pass runtime, Vercel Cron handler, DB lease
   auth/ db/             Password sessions, Postgres migrations and repositories
   notify/               Notification rules: cooldowns, transitions, explanations
   settings/             Single-user preferences with validated defaults
@@ -227,8 +230,9 @@ immediately.
 - Accounts, sessions, watchlists, virtual cash, live paper positions, and
   one-time account actions persist in Postgres (or PGlite locally). Production
   email delivery still requires a verified sender domain in Resend.
-- In-app notifications only; no push. Alerts and the shadow bot require the
-  separately deployed long-running worker described in `docs/ALERT_WORKER.md`.
+- In-app notifications only; no push. Alerts and the shadow bot run through the
+  production Vercel Cron function described in `docs/ALERT_WORKER.md`; the
+  one-minute schedule requires a Pro or Enterprise Vercel plan.
 - The iOS SwiftUI module covers the original arbitrage calculator, not the new
   paper-trading UI; the web app is the reference front end.
 - Simulated fills assume the min-received of the best quote — conservative, but

@@ -1,15 +1,18 @@
 # Background worker: alerts and shadow paper bot
 
-A long-running process that evaluates every user's alert rules and runs enabled
-simulation-only shadow strategies. Deployed **separately from the Vercel API**,
-from this same repository.
+A bounded Vercel Cron function that evaluates every user's alert rules and runs
+enabled simulation-only shadow strategies once per invocation. It ships with
+the same Vercel project as the API and SPA.
 
 ## Why it is separate
 
-Everything else in Moonpaper runs inside an HTTP request. Alerts are the
-opposite: they fire when nobody is looking. Vercel's serverless functions
-cannot hold a loop, and cron on the Hobby plan runs **once per day** — not an
-alerting product for tokens that can rug in ninety seconds.
+Alerts must run when nobody is looking, but a serverless function cannot hold a
+permanent `setInterval` loop. Vercel Cron instead sends an authenticated GET to
+`/api/cron/worker` every minute. The handler claims a database lease, runs one
+bounded pass, persists its results, releases the lease, and exits.
+
+The one-minute schedule requires Vercel Pro or Enterprise. Hobby permits only a
+daily schedule and will reject this repository's cron expression at deploy.
 
 ## What it does each pass
 
@@ -41,38 +44,48 @@ position transaction, so no later automatic open or close can commit after the
 disable request completes. Manual closes remain available for every bot-opened
 position.
 
-## Deploying to Railway
+## Deploying on Vercel
 
-1. New project → **Deploy from GitHub repo** → this repository.
-2. Railway reads `railway.json`; no Dockerfile needed.
-3. Set environment variables:
+The cron entry is `api/cron-worker.js`; `vercel.json` registers the production
+schedule and routes `/api/cron/worker` to it. Cron never runs for preview
+deployments.
 
-   | Variable | Required | Notes |
-   |---|---|---|
-   | `DATABASE_URL` | yes | Same database as the Vercel app |
-   | `SOLANA_RPC_URL` | yes | Keyed provider; the public endpoint refuses the holder scan |
-   | `ALERT_INTERVAL_MS` | no | Default `60000`. Lower means faster alerts and more RPC spend |
-   | `JUPITER_API_KEY` | no | Only if you move off the keyless endpoint |
+Set these Vercel environment variables for **Production**:
 
-4. Deploy. Healthy startup logs:
+| Variable | Required | Notes |
+|---|---|---|
+| `CRON_SECRET` | yes | Random secret of at least 16 characters; Vercel sends it as `Authorization: Bearer …` |
+| `DATABASE_URL` | yes | Same hosted Postgres database as the Vercel API |
+| `SOLANA_RPC_URL` | yes | Keyed provider recommended; the public endpoint can rate-limit holder scans |
+| `JUPITER_API_KEY` | no | Recommended when moving from the keyless compatibility endpoint |
 
-   ```json
-   {"ts":"...","msg":"alert worker started","intervalMs":60000}
-   ```
+Deploy the production branch. A successful invocation logs:
 
-Missing `DATABASE_URL` exits with code 1 and a clear message, so the host
-restarts it once the variable is set rather than idling in a state that can
-never do work.
+```json
+{"ts":"...","msg":"scheduled worker pass complete","runKey":"scheduled:...","status":"completed"}
+```
 
-## Tuning the interval
+Calls without the exact bearer secret return `401` before a database connection
+or provider client is created. Missing persistence or an unexpected pass-level
+failure returns `503` and is visible in Vercel Function logs.
 
-`ALERT_INTERVAL_MS` is the main cost/latency dial. Each pass costs roughly one
-research call per *distinct* watched mint — not per rule, and not per user.
+## Scheduling, overlap, and duplicate delivery
 
-If a pass takes longer than its interval the worker logs a warning and skips
-the overlapping tick rather than running two passes at once. Two concurrent
-passes would diff against each other's snapshots and could double-fire the same
-crossing.
+The production cadence is the five-field cron expression in `vercel.json`.
+Each pass costs roughly one research call per *distinct* watched mint — not per
+rule, and not per user.
+
+Vercel may overlap invocations or deliver a scheduled event more than once. The
+`worker_leases` row prevents both failure modes:
+
+- `lease_expires_at` admits only one active function across every instance.
+- `last_run_key` makes each UTC minute idempotent even after the lease releases.
+- An abandoned lease expires after six minutes, one minute beyond Fluid
+  Compute's default five-minute ceiling, so a terminated invocation can recover
+  without overlapping its replacement.
+
+`ALERT_INTERVAL_MS` remains available only for the standalone local development
+loop (`npm run worker:dev --prefix backend`); it does not change Vercel Cron.
 
 ## Behaviour worth knowing
 

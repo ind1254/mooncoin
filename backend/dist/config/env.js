@@ -5,6 +5,7 @@ import { z } from "zod";
  */
 const emptyToUndefined = (value) => typeof value === "string" && value.trim() === "" ? undefined : value;
 const optionalNonempty = z.preprocess(emptyToUndefined, z.string().min(1).optional());
+const optionalSecret = z.preprocess(emptyToUndefined, z.string().min(16).max(512).optional());
 const envSchema = z.object({
     PORT: z.coerce.number().int().min(1).max(65535).default(8787),
     /**
@@ -63,6 +64,8 @@ const envSchema = z.object({
     PAPER_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().min(1_000).max(3_600_000).default(60_000),
     /** Long-running alert and paper-bot worker cadence. */
     ALERT_INTERVAL_MS: z.coerce.number().int().min(15_000).max(3_600_000).default(60_000),
+    /** Vercel automatically sends this bearer secret to the scheduled worker route. */
+    CRON_SECRET: optionalSecret,
     /** How long a signed-in session lasts. */
     SESSION_TTL_DAYS: z.coerce.number().int().min(1).max(365).default(30),
     /** Public, canonical origin used in emailed links. Never inferred from Host. */
