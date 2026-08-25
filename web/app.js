@@ -114,6 +114,7 @@
       feedKind: "trending",
     },
     gateReports: new Map(),
+    portfolioRequestIds: new Map(),
     modalOpen: false,
   };
 
@@ -1116,7 +1117,7 @@
           if (!stopped && listEl.isConnected) {
             const interacting = state.modalOpen
               || listEl.contains(document.activeElement)
-              || Boolean(listEl.querySelector(".sm-gates:disabled, .score-details[open]"));
+              || Boolean(listEl.querySelector(".sm-store:disabled, .score-details[open]"));
             if (!interacting && signatureFor(nextFeed) !== feedSignature) paintFeed(nextFeed);
             else paintFreshness(nextFeed);
           }
@@ -1165,7 +1166,6 @@
       ? `<img src="${esc(token.iconUrl)}" alt="" loading="lazy" referrerpolicy="no-referrer">`
       : `<span aria-hidden="true">◉</span>`;
     const storedGateReport = state.gateReports.get(token.mint);
-    const paperReady = livePaperReportIsUsable(storedGateReport);
     const fomoUrl = fomoCoinUrl(token.mint);
     const signalChip = assessment.autoPaperEligible
       ? `<span class="chip signal-paper">PAPER QUEUE</span>`
@@ -1211,45 +1211,51 @@
         ${freshness(token.updatedAgeSeconds ?? 999, token.reliability)}
         <div class="row" style="flex-wrap:wrap;justify-content:flex-end">
           <button class="star ${token.inWatchlist ? "active" : ""}" title="Watchlist" aria-label="Toggle watchlist">★</button>
-          <button class="btn secondary sm-gates">${storedGateReport ? "Check again" : "Check $100 eligibility"}</button>
-          <button class="btn sm-paper ${paperReady ? "" : "hidden"}">Paper buy $100</button>
+          <button class="btn sm-store" title="Run fresh safety gates, then store a $100 simulated position">Store in portfolio</button>
           <a class="btn sm-fomo" href="${esc(fomoUrl)}" target="_blank" rel="noopener noreferrer" title="Open this exact Solana mint in FOMO; choose the amount and confirm there">Trade on FOMO ↗</a>
         </div>
       </div>
     `;
 
-    div.querySelector(".sm-gates").addEventListener("click", async (event) => {
+    div.querySelector(".sm-store").addEventListener("click", async (event) => {
+      event.stopPropagation();
+      if (!session.authenticated) {
+        openAccessModal();
+        return;
+      }
       const button = event.currentTarget;
       const out = div.querySelector(".gate-check-out");
-      const paperButton = div.querySelector(".sm-paper");
       button.disabled = true;
-      button.textContent = "Checking…";
+      button.textContent = "Checking safety…";
       out.innerHTML = `<div class="sstate"><div class="spinner"></div>Verifying route and chain…</div>`;
       try {
         const report = await api(`/v1/tradability/${encodeURIComponent(token.mint)}?amountUsd=100&slippageBps=50`);
         state.gateReports.set(token.mint, report);
         out.innerHTML = gateReportHtml(report, true);
-        paperButton.classList.toggle("hidden", !livePaperReportIsUsable(report));
-        button.textContent = "Check again";
-        if (report.quote) {
-          setTimeout(() => {
-            if (out.isConnected) {
-              out.innerHTML = gateReportHtml(report, true);
-              paperButton.classList.add("hidden");
-            }
-          }, Math.max(0, report.quote.expiresAtMs - Date.now()) + 100);
+        if (!livePaperReportIsUsable(report)) {
+          button.textContent = "Store in portfolio";
+          toast(`${token.symbol} did not pass the fresh portfolio safety gates`, "error");
+          return;
         }
+        button.textContent = "Storing…";
+        const clientRequestId = state.portfolioRequestIds.get(token.mint) ?? crypto.randomUUID();
+        state.portfolioRequestIds.set(token.mint, clientRequestId);
+        const body = await post("/v1/me/paper/positions", {
+          clientRequestId,
+          tokenMint: token.mint,
+          amountUsd: "100",
+          slippageBps: 50,
+        });
+        state.portfolioRequestIds.delete(token.mint);
+        toast(`${body.position.token.symbol} stored in your simulated portfolio`, "ok");
+        location.hash = "#/portfolio";
+        if (state.route.name === "portfolio") render();
       } catch (err) {
-        out.innerHTML = `<div class="unavail-block"><div class="unavail-title">Eligibility check unavailable</div><div class="tiny muted">${esc(err.message)}</div></div>`;
-        button.textContent = "Retry eligibility";
+        out.innerHTML = `<div class="unavail-block"><div class="unavail-title">Could not store this position</div><div class="tiny muted">${esc(err.message)}</div></div>`;
+        button.textContent = "Retry store";
       } finally {
         button.disabled = false;
       }
-      event.stopPropagation();
-    });
-    div.querySelector(".sm-paper").addEventListener("click", (event) => {
-      openLivePaperTradeModal(token, "100", state.gateReports.get(token.mint));
-      event.stopPropagation();
     });
     div.querySelector(".star").addEventListener("click", async (event) => {
       if (!session.authenticated) {
@@ -1977,7 +1983,7 @@
           <h3>Live-quote paper positions</h3>
           <span class="tiny muted">${esc(p.limits.minEntryUsd)}–${esc(p.limits.maxEntryUsd)} USD per entry · max ${p.limits.maxOpenPositions} open</span>
         </div>
-        ${p.positions.length ? "" : `<div class="empty" style="padding:26px 12px">No positions yet.<br><span class="tiny faint">Run an eligible production check on a live token, then choose Paper buy.</span></div>`}
+        ${p.positions.length ? "" : `<div class="empty" style="padding:26px 12px">No positions yet.<br><span class="tiny faint">Choose Store in portfolio on a live token; Moonpaper checks every safety gate before saving the simulated position.</span></div>`}
       </div>
 
       ${openPositions.length ? `<h3 style="margin:16px 0 10px">Open positions</h3><div>${openPositions.map(positionCard).join("")}</div>` : ""}
