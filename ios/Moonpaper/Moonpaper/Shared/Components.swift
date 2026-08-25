@@ -67,7 +67,7 @@ struct ScoreBadge: View {
             Text(score.formatted())
                 .font(.title2.bold().monospacedDigit())
                 .foregroundStyle(MoonpaperTheme.mint)
-            Text("QUALITY")
+            Text("LIVE SCORE")
                 .font(.system(size: 8, weight: .bold))
                 .foregroundStyle(.tertiary)
                 .tracking(0.5)
@@ -169,6 +169,14 @@ enum Formatters {
     static func percent(_ value: String?) -> String {
         guard let value, let number = Double(value) else { return "—" }
         return String(format: "%@%.2f%%", number > 0 ? "+" : "", number)
+    }
+
+    static func marketAge(_ seconds: Int?) -> String {
+        guard let seconds else { return "Age —" }
+        if seconds < 60 { return "\(seconds)s old" }
+        if seconds < 3_600 { return "\(seconds / 60)m old" }
+        if seconds < 86_400 { return "\(seconds / 3_600)h old" }
+        return "\(seconds / 86_400)d old"
     }
 
     static func changeColor(_ value: String?) -> Color {

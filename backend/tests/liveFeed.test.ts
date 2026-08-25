@@ -78,6 +78,26 @@ describe("Jupiter live token feed", () => {
     expect(result.tokens[0]?.token.symbol).toBe("BONK");
   });
 
+  it("refreshes the upstream trending snapshot on the one-second cadence", async () => {
+    let now = NOW;
+    let fetches = 0;
+    const provider = new JupiterLiveFeedProvider({
+      clock: () => now,
+      fetchImpl: async () => {
+        fetches++;
+        return Response.json([token]);
+      },
+    });
+
+    await provider.getFeed("trending");
+    now += 999;
+    await provider.getFeed("trending");
+    expect(fetches).toBe(1);
+    now += 1;
+    await provider.getFeed("trending");
+    expect(fetches).toBe(2);
+  });
+
   it("serves a truthful live API payload with risk gates and no execution claim", async () => {
     const clock = () => NOW;
     const deps = createTestDeps(clock);
@@ -111,5 +131,67 @@ describe("Jupiter live token feed", () => {
     expect(body.tokens[0]?.fiveMinuteVolumeUsd).toBe("70000.00");
     expect(body.tokens[0]?.assessment.status).toBe("active");
     expect(body.tokens[0]?.assessment.eligibility).toMatch(/production check/);
+  });
+
+  it("filters the ranked feed by score, market cap, age, volume, and risk", async () => {
+    const strong = {
+      ...token,
+      id: "So11111111111111111111111111111111111111112",
+      symbol: "STRONG",
+      isVerified: true,
+      liquidity: 5_000_000,
+      mcap: 50_000_000,
+      holderCount: 100_000,
+      organicScore: 95,
+      createdAt: "2026-07-01T00:00:00Z",
+      updatedAt: "2026-08-17T20:17:59Z",
+      audit: {
+        mintAuthorityDisabled: true,
+        freezeAuthorityDisabled: true,
+        topHoldersPercentage: 5,
+      },
+      stats5m: {
+        priceChange: 5,
+        liquidityChange: 1,
+        volumeChange: 10,
+        buyVolume: 390_000,
+        sellVolume: 210_000,
+        numBuys: 1_300,
+        numSells: 700,
+        numTraders: 1_200,
+      },
+      stats1h: { priceChange: 8, buyVolume: 2_000_000, sellVolume: 1_500_000 },
+      stats24h: { priceChange: 15, buyVolume: 8_000_000, sellVolume: 6_000_000 },
+    };
+    const clock = () => NOW;
+    const deps = createTestDeps(clock);
+    deps.liveFeed = new JupiterLiveFeedProvider({
+      clock,
+      fetchImpl: async () => Response.json([token, strong]),
+    });
+    const server = createApp(deps).listen(0);
+    servers.push(server);
+    const address = server.address();
+    const base = typeof address === "object" && address ? `http://127.0.0.1:${address.port}` : "";
+
+    const response = await fetch(
+      `${base}/v1/feed?kind=trending&minQualityScore=90&maxRiskScore=15&minMarketCapUsd=1000000&minAgeMinutes=1440&minVolume5mUsd=100000&sort=score`,
+    );
+    const body = await response.json() as {
+      refreshAfterMs: number;
+      ranking: { scoreVersion: string };
+      tokens: Array<{ symbol: string; rank: number; assessment: { autoPaperEligible: boolean } }>;
+    };
+
+    expect(response.status).toBe(200);
+    expect(body.refreshAfterMs).toBe(1_000);
+    expect(body.ranking.scoreVersion).toBe("live-v2");
+    expect(body.tokens).toEqual([
+      expect.objectContaining({
+        symbol: "STRONG",
+        rank: 1,
+        assessment: expect.objectContaining({ autoPaperEligible: true }),
+      }),
+    ]);
   });
 });

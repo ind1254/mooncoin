@@ -20,7 +20,7 @@ risks, and what would happen if I paper-traded it?"**
 
 | Pillar | What it does | Where |
 |---|---|---|
-| **Discover** | Live recently-created and five-minute trending Solana token feeds with price, volume, liquidity, freshness, duplicate-ticker warnings, and on-demand production eligibility gates | Research tab |
+| **Discover** | Confidence-ranked five-minute trending by default, with one-second refresh, automatic Smart Watch / paper-candidate queues, market cap, age, volume, liquidity, risk, and score filters | Research tab |
 | **Evaluate** | Separate momentum / liquidity / execution / risk scores, each with the exact evidence that produced it | Token detail |
 | **Compare execution** | Executable quotes per venue for your exact size: impact, pool fees, network + priority fees, min-received under slippage, best route vs alternatives | Token detail |
 | **Paper trade** | Authenticated, persistent positions for real Solana mints. Entries rerun every production gate and store Jupiter's minimum received; closes use a fresh exact-size sell quote — never chart prices | Confirm modal / Portfolio |
@@ -181,7 +181,10 @@ base units. Floats appear only when *generating* simulated market data and in
 display formatting — never in balances or P&L.
 
 **Provider boundary:** live discovery uses Jupiter Tokens V2 (`recent` and
-`toptraded/5m`) with a 10-second cache. Arbitrary-token research resolves by
+`toptraded/5m`) with a one-second, single-flight cache. The live-v2 score is
+recomputed from market depth, five-minute demand, fast safety signals, maturity,
+and evidence coverage; it is a current-condition score, not a profit probability.
+Arbitrary-token research resolves by
 mint and verifies authority settings through read-only Solana RPC. Quotes use
 Jupiter's read-only quote route with no fabricated fallback. The production
 eligibility service combines those independent sources for one exact USDC size:
@@ -195,7 +198,7 @@ and revalue or close with fresh token-to-USDC quotes.
 
 ```
 GET  /health                        GET  /v1/meta
-GET  /v1/feed                       ?kind=recent|trending&minLiquidityUsd&search
+GET  /v1/feed                       ?kind&minQualityScore&maxRiskScore&minLiquidityUsd&minMarketCapUsd&maxMarketCapUsd&minAgeMinutes&maxAgeMinutes&minVolume5mUsd&verifiedOnly&sort&search
 GET  /v1/tradability/:mint          ?amountUsd&slippageBps (seven production gates)
 GET  /v1/quote                      ?inputMint&outputMint&amount&slippageBps
 POST /v1/auth/signup                {email, password}
@@ -246,7 +249,8 @@ immediately.
 
 ## Known limitations
 
-- The live home feed is request-driven and cached for 10 seconds; it is not a
+- The live home feed is request-driven and refreshed through a one-second
+  single-flight cache; upstream values can still update less frequently. It is not a
   durable chain-indexing pipeline and does not backfill missed program events.
 - Jupiter catalog presence and reported liquidity do not prove that a route is
   executable for a particular size. The UI exposes a server-side production

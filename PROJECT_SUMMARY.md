@@ -19,8 +19,10 @@ strict safety boundary of **no real trades, no custody, no private keys**.
 ## What it does (five product pillars)
 
 1. **Discover** — live recently-created and five-minute trending Solana token
-   feeds from Jupiter with price, volume, liquidity, freshness, duplicate-ticker
-   warnings, a 0–100 research score, and canonical mint IDs. An on-demand
+   feeds from Jupiter, defaulting to confidence-ranked five-minute trending with
+   one-second refresh, market-cap/age/volume/liquidity/risk filters, automatic
+   Smart Watch and paper-candidate queues, an evidence-weighted 0–100 live score,
+   and canonical mint IDs. An on-demand
    seven-gate production check verifies market age, liquidity, on-chain mint and
    freeze authorities, ticker ambiguity, a live route, and price impact for an
    exact USDC size.
@@ -79,7 +81,8 @@ fired ("BONK now matches your balanced strategy: liquidity increased, ...").
   the overall score (a pumping rug-pull candidate can never rank "strong").
 - **Token identity by mint address only** — symbols are display-only, which
   kills the classic duplicate-ticker attack on token lists.
-- **Testing:** 231 automated tests: live-feed normalization, production
+- **Testing:** 351 automated tests: live-feed normalization, concentrated live-v2
+  scoring and filtering, production
   tradability gates, provider degradation,
   money-math boundaries, scoring evidence,
   paper-engine invariants (balance bookkeeping is exact to the lamport), and
@@ -100,7 +103,7 @@ fired ("BONK now matches your balanced strategy: liquidity increased, ...").
 ## Honest caveats (do NOT overstate these on the resume)
 
 - **Live but not a chain indexer.** The home feed retrieves Jupiter's current
-  `recent` and `toptraded/5m` catalogs with a 10-second cache. It does not run a
+  `recent` and `toptraded/5m` catalogs with a one-second single-flight cache. It does not run a
   durable program-log consumer or backfill missed chain events. Catalog data is
   not claimed to prove an executable route; the separate quote request does.
 - **Paper trading only.** No real trades were ever executed; simulated fills
@@ -123,7 +126,7 @@ fired ("BONK now matches your balanced strategy: liquidity increased, ...").
 
 ## Numbers you can cite
 
-- 231 automated tests across 19 suites, all passing; strict-mode TypeScript
+- 351 automated tests across 33 suites, all passing; strict-mode TypeScript
 - 34 HTTP routes (market, auth, live/demo paper trading, settings + legacy/admin)
 - 6 seeded market scenarios; 3 simulated venues with distinct fee/liquidity profiles
 - 3 forward-only Postgres migrations shared by production and local tests

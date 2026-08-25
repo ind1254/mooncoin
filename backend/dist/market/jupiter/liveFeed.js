@@ -60,7 +60,10 @@ export class JupiterLiveFeedProvider {
         this.clock = options.clock ?? Date.now;
         this.fetchImpl = options.fetchImpl ?? globalThis.fetch;
         this.loader = new CachedLoader({
-            ttlMs: options.cacheTtlMs ?? 10_000,
+            // The discovery UI recomputes its evidence score once per second. Keep
+            // the provider cache on the same cadence while retaining single-flight
+            // request deduplication and longer rate-limit backoff.
+            ttlMs: options.cacheTtlMs ?? 1_000,
             failureTtlMs: 3_000,
             rateLimitTtlMs: 20_000,
             maxEntries: 4,

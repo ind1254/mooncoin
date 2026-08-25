@@ -26,13 +26,36 @@ struct MoonpaperAPI {
         self.session = session
     }
 
-    func feed(kind: FeedKind, limit: Int = 60) async throws -> LiveFeedResponse {
-        try await get(
+    func feed(
+        kind: FeedKind,
+        limit: Int = 60,
+        minQualityScore: Int? = nil,
+        maxRiskScore: Int? = nil,
+        minLiquidityUsd: Int? = nil,
+        minMarketCapUsd: Int? = nil,
+        minAgeMinutes: Int? = nil,
+        maxAgeMinutes: Int? = nil,
+        minVolume5mUsd: Int? = nil
+    ) async throws -> LiveFeedResponse {
+        var query = [
+            URLQueryItem(name: "kind", value: kind.rawValue),
+            URLQueryItem(name: "limit", value: String(limit)),
+            URLQueryItem(name: "sort", value: "score"),
+        ]
+        for (name, value) in [
+            ("minQualityScore", minQualityScore),
+            ("maxRiskScore", maxRiskScore),
+            ("minLiquidityUsd", minLiquidityUsd),
+            ("minMarketCapUsd", minMarketCapUsd),
+            ("minAgeMinutes", minAgeMinutes),
+            ("maxAgeMinutes", maxAgeMinutes),
+            ("minVolume5mUsd", minVolume5mUsd),
+        ] where value != nil {
+            query.append(URLQueryItem(name: name, value: String(value!)))
+        }
+        return try await get(
             path: "v1/feed",
-            queryItems: [
-                URLQueryItem(name: "kind", value: kind.rawValue),
-                URLQueryItem(name: "limit", value: String(limit)),
-            ]
+            queryItems: query
         )
     }
 

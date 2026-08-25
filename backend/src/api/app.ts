@@ -27,7 +27,11 @@ import {
 import { JupiterQuoteProvider, type QuoteProvider } from "../market/jupiter/quotes.js";
 import { ResearchService, type ResearchProfile } from "../market/research.js";
 import { TradabilityService, type TradabilityCheck, type TradabilityPolicy } from "../market/tradability.js";
-import { assessLiveFeedToken, sumLiveFeedVolume } from "../market/feedAssessment.js";
+import {
+  assessLiveFeedToken,
+  sumLiveFeedVolume,
+  type LiveFeedAssessment,
+} from "../market/feedAssessment.js";
 import { SolanaRpcClient } from "../market/solana/rpc.js";
 import type { TokenSearchResult } from "../market/types.js";
 import type {
@@ -408,9 +412,12 @@ function serializeLiveFeedToken(
   inWatchlist: boolean,
   policy: TradabilityPolicy,
   duplicateSymbolCount: number,
+  assessment = assessLiveFeedToken(token, nowMs, policy, duplicateSymbolCount),
+  rank?: number,
 ): Record<string, unknown> {
   const market = token.token.market;
   const updatedAgeSeconds = token.updatedAtMs === null ? null : Math.max(0, Math.round((nowMs - token.updatedAtMs) / 1000));
+  const marketAgeSeconds = token.firstPoolAtMs === null ? null : Math.max(0, Math.round((nowMs - token.firstPoolAtMs) / 1_000));
   const volume = (window: "fiveMinutes" | "oneHour" | "twentyFourHours") => usdOrNull(sumLiveFeedVolume(token, window));
   const serializeWindow = (window: LiveFeedToken["fiveMinutes"]) => ({
     priceChangePct: pctOrNull(window.priceChangeBps),
@@ -435,6 +442,7 @@ function serializeLiveFeedToken(
     verifiedByProvider: token.token.verifiedByProvider,
     source: token.token.source,
     firstPoolAtMs: token.firstPoolAtMs,
+    marketAgeSeconds,
     updatedAtMs: token.updatedAtMs,
     updatedAgeSeconds,
     reliability: updatedAgeSeconds === null ? "unavailable" : updatedAgeSeconds <= 60 ? "fresh" : updatedAgeSeconds <= 300 ? "stale" : "unavailable",
@@ -451,7 +459,8 @@ function serializeLiveFeedToken(
     stats1h: serializeWindow(token.oneHour),
     stats24h: serializeWindow(token.twentyFourHours),
     providerClaims: token.token.providerClaims,
-    assessment: assessLiveFeedToken(token, nowMs, policy, duplicateSymbolCount),
+    assessment,
+    rank: rank ?? null,
     inWatchlist,
   };
 }
@@ -888,11 +897,26 @@ export function createApp(deps: AppDeps): Express {
 
   // ---- Live discovery: current Solana tokens, separate from the simulator ----
   const liveFeedQuery = z.object({
-    kind: z.enum(["recent", "trending"]).default("recent"),
+    kind: z.enum(["recent", "trending"]).default("trending"),
     limit: z.coerce.number().int().min(1).max(100).default(30),
     minLiquidityUsd: z.coerce.number().min(0).optional(),
+    minMarketCapUsd: z.coerce.number().min(0).optional(),
+    maxMarketCapUsd: z.coerce.number().min(0).optional(),
+    minAgeMinutes: z.coerce.number().min(0).optional(),
+    maxAgeMinutes: z.coerce.number().min(0).optional(),
+    minVolume5mUsd: z.coerce.number().min(0).optional(),
+    minQualityScore: z.coerce.number().int().min(0).max(100).optional(),
+    maxRiskScore: z.coerce.number().int().min(0).max(100).optional(),
+    verifiedOnly: z.enum(["true", "false"]).transform((value) => value === "true").optional(),
+    sort: z.enum(["score", "volume", "marketCap", "newest"]).default("score"),
     search: z.string().max(80).optional(),
-  });
+  }).refine(
+    (value) => value.minMarketCapUsd === undefined || value.maxMarketCapUsd === undefined || value.minMarketCapUsd <= value.maxMarketCapUsd,
+    { message: "Minimum market cap cannot exceed maximum market cap" },
+  ).refine(
+    (value) => value.minAgeMinutes === undefined || value.maxAgeMinutes === undefined || value.minAgeMinutes <= value.maxAgeMinutes,
+    { message: "Minimum market age cannot exceed maximum market age" },
+  );
 
   app.get("/v1/feed", async (req, res) => {
     try {
@@ -908,7 +932,6 @@ export function createApp(deps: AppDeps): Express {
       const feed = await deps.liveFeed.getFeed(q.data.kind, abort.signal);
       const settings = deps.settings.get();
       const nowMs = deps.clock();
-      let tokens = feed.tokens;
       const symbolMints = new Map<string, Set<string>>();
       for (const item of feed.tokens) {
         const key = item.token.symbol.toLowerCase();
@@ -917,19 +940,80 @@ export function createApp(deps: AppDeps): Express {
         symbolMints.set(key, mints);
       }
 
+      const assessed = feed.tokens.map((item) => ({
+        item,
+        assessment: assessLiveFeedToken(
+          item,
+          nowMs,
+          tradabilityPolicy,
+          symbolMints.get(item.token.symbol.toLowerCase())?.size ?? 1,
+        ),
+      }));
+      let tokens: Array<{ item: LiveFeedToken; assessment: LiveFeedAssessment }> = assessed;
+      const usdThreshold = (value: number): bigint => BigInt(Math.round(value)) * 1_000_000n;
       if (q.data.minLiquidityUsd !== undefined) {
-        const threshold = BigInt(Math.round(q.data.minLiquidityUsd)) * 1_000_000n;
-        tokens = tokens.filter((item) => (item.token.market.liquidityUsdMicro ?? 0n) >= threshold);
+        const threshold = usdThreshold(q.data.minLiquidityUsd);
+        tokens = tokens.filter(({ item }) => (item.token.market.liquidityUsdMicro ?? 0n) >= threshold);
+      }
+      if (q.data.minMarketCapUsd !== undefined) {
+        const threshold = usdThreshold(q.data.minMarketCapUsd);
+        tokens = tokens.filter(({ item }) => (item.token.market.marketCapUsdMicro ?? 0n) >= threshold);
+      }
+      if (q.data.maxMarketCapUsd !== undefined) {
+        const threshold = usdThreshold(q.data.maxMarketCapUsd);
+        tokens = tokens.filter(({ item }) => {
+          const marketCap = item.token.market.marketCapUsdMicro;
+          return marketCap !== null && marketCap <= threshold;
+        });
+      }
+      if (q.data.minAgeMinutes !== undefined) {
+        const thresholdMs = q.data.minAgeMinutes * 60_000;
+        tokens = tokens.filter(({ item }) => item.firstPoolAtMs !== null && nowMs - item.firstPoolAtMs >= thresholdMs);
+      }
+      if (q.data.maxAgeMinutes !== undefined) {
+        const thresholdMs = q.data.maxAgeMinutes * 60_000;
+        tokens = tokens.filter(({ item }) => item.firstPoolAtMs !== null && nowMs - item.firstPoolAtMs <= thresholdMs);
+      }
+      if (q.data.minVolume5mUsd !== undefined) {
+        const threshold = usdThreshold(q.data.minVolume5mUsd);
+        tokens = tokens.filter(({ item }) => (sumLiveFeedVolume(item, "fiveMinutes") ?? 0n) >= threshold);
+      }
+      if (q.data.minQualityScore !== undefined) {
+        tokens = tokens.filter(({ assessment }) => assessment.qualityScore >= q.data.minQualityScore!);
+      }
+      if (q.data.maxRiskScore !== undefined) {
+        tokens = tokens.filter(({ assessment }) => assessment.riskScore <= q.data.maxRiskScore!);
+      }
+      if (q.data.verifiedOnly) {
+        tokens = tokens.filter(({ item }) => item.token.verifiedByProvider);
       }
       if (q.data.search) {
         const needle = q.data.search.toLowerCase();
         tokens = tokens.filter(
-          (item) =>
+          ({ item }) =>
             item.token.symbol.toLowerCase().includes(needle) ||
             item.token.name.toLowerCase().includes(needle) ||
             item.token.mint.toLowerCase().includes(needle),
         );
       }
+      const bigintDesc = (left: bigint | null, right: bigint | null): number => {
+        const a = left ?? -1n;
+        const b = right ?? -1n;
+        return a === b ? 0 : a > b ? -1 : 1;
+      };
+      tokens.sort((left, right) => {
+        if (q.data.sort === "newest") return (right.item.firstPoolAtMs ?? 0) - (left.item.firstPoolAtMs ?? 0);
+        if (q.data.sort === "volume") {
+          return bigintDesc(sumLiveFeedVolume(left.item, "fiveMinutes"), sumLiveFeedVolume(right.item, "fiveMinutes"));
+        }
+        if (q.data.sort === "marketCap") {
+          return bigintDesc(left.item.token.market.marketCapUsdMicro, right.item.token.market.marketCapUsdMicro);
+        }
+        return right.assessment.qualityScore - left.assessment.qualityScore
+          || right.assessment.confidenceScore - left.assessment.confidenceScore
+          || left.assessment.riskScore - right.assessment.riskScore
+          || bigintDesc(sumLiveFeedVolume(left.item, "fiveMinutes"), sumLiveFeedVolume(right.item, "fiveMinutes"));
+      });
       tokens = tokens.slice(0, q.data.limit);
 
       res.json({
@@ -939,10 +1023,17 @@ export function createApp(deps: AppDeps): Express {
         kind: feed.kind,
         source: feed.source,
         fetchedAtMs: feed.fetchedAtMs,
+        computedAtMs: nowMs,
+        ageMilliseconds: Math.max(0, nowMs - feed.fetchedAtMs),
         ageSeconds: Math.max(0, Math.round((nowMs - feed.fetchedAtMs) / 1000)),
         reliability: feed.reliability,
-        refreshAfterMs: 10_000,
+        refreshAfterMs: 1_000,
         count: tokens.length,
+        ranking: {
+          sort: q.data.sort,
+          scoreVersion: "live-v2",
+          description: "Ranked from live demand, market depth, safety, maturity, and evidence confidence; the score is not a profit probability.",
+        },
         policy: {
           minLiquidityUsd: deps.env.TRADABILITY_MIN_LIQUIDITY_USD.toString(),
           maxPriceImpactPct: pctStr(tradabilityPolicy.maxPriceImpactBps),
@@ -950,13 +1041,15 @@ export function createApp(deps: AppDeps): Express {
         },
         notice:
           "Live catalog data is not an execution guarantee. Run the production check to verify a route, market freshness, liquidity, ticker ambiguity, and the mint account.",
-        tokens: tokens.map((item) =>
+        tokens: tokens.map(({ item, assessment }, index) =>
           serializeLiveFeedToken(
             item,
             nowMs,
             settings.watchlist.includes(item.token.mint),
             tradabilityPolicy,
             symbolMints.get(item.token.symbol.toLowerCase())?.size ?? 1,
+            assessment,
+            index + 1,
           ),
         ),
       });

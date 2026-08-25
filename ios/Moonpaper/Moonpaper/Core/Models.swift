@@ -21,7 +21,10 @@ struct LiveFeedResponse: Decodable {
     let kind: FeedKind
     let source: String
     let fetchedAtMs: Int64
+    let computedAtMs: Int64?
+    let ageMilliseconds: Int?
     let ageSeconds: Int
+    let refreshAfterMs: Int?
     let reliability: String
     let notice: String
     let tokens: [FeedToken]
@@ -35,6 +38,7 @@ struct FeedToken: Decodable, Identifiable, Hashable {
     let verifiedByProvider: Bool
     let launchpad: String?
     let firstPoolAtMs: Int64?
+    let marketAgeSeconds: Int?
     let updatedAgeSeconds: Int?
     let reliability: String
     let priceUsd: String?
@@ -45,6 +49,7 @@ struct FeedToken: Decodable, Identifiable, Hashable {
     let fiveMinuteVolumeUsd: String?
     let stats5m: FeedWindowStats
     let assessment: FeedAssessment
+    let rank: Int?
 
     var id: String { mint }
     var route: TokenRoute { TokenRoute(mint: mint, symbol: symbol, name: name, iconURL: iconUrl) }
@@ -64,11 +69,33 @@ struct FeedWindowStats: Decodable, Hashable {
 struct FeedAssessment: Decodable, Hashable {
     let status: String
     let qualityScore: Int
+    let confidenceScore: Int?
+    let momentumScore: Int?
     let riskScore: Int
     let riskLevel: String
+    let signal: String?
+    let actionLabel: String?
+    let autoWatchEligible: Bool?
+    let autoPaperEligible: Bool?
+    let trendAlignment: FeedTrendAlignment?
+    let scoreBreakdown: [FeedScoreComponent]?
     let warnings: [String]
     let duplicateSymbolCount: Int
     let eligibility: String
+}
+
+struct FeedTrendAlignment: Decodable, Hashable {
+    let positiveWindows: Int
+    let measuredWindows: Int
+    let label: String
+}
+
+struct FeedScoreComponent: Decodable, Hashable, Identifiable {
+    let id: String
+    let label: String
+    let score: Int
+    let maxScore: Int
+    let detail: String
 }
 
 struct SearchResponse: Decodable {
@@ -159,4 +186,3 @@ struct APIErrorEnvelope: Decodable {
     let error: String?
     let message: String?
 }
-

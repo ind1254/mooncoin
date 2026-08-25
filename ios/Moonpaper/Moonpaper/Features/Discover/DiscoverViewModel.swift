@@ -10,8 +10,15 @@ final class DiscoverViewModel: ObservableObject {
     @Published private(set) var isLoading = false
     @Published private(set) var isSearching = false
     @Published private(set) var lastUpdated: Date?
+    @Published private(set) var sourceAgeMilliseconds = 0
     @Published var errorMessage: String?
     @Published var searchText = ""
+    @Published var minQualityScore = 70
+    @Published var maxRiskScore = 45
+    @Published var minLiquidityUsd = 0
+    @Published var minMarketCapUsd = 0
+    @Published var marketAgeFilter = 0
+    @Published var minVolume5mUsd = 5_000
 
     private let api: MoonpaperAPI
     private var searchTask: Task<Void, Never>?
@@ -21,20 +28,49 @@ final class DiscoverViewModel: ObservableObject {
     }
 
     var isShowingSearch: Bool { searchText.trimmingCharacters(in: .whitespacesAndNewlines).count >= 2 }
+    var refreshKey: String {
+        "\(selectedFeed.rawValue):\(minQualityScore):\(maxRiskScore):\(minLiquidityUsd):\(minMarketCapUsd):\(marketAgeFilter):\(minVolume5mUsd)"
+    }
+    var smartWatchCount: Int { tokens.filter { $0.assessment.autoWatchEligible == true }.count }
+    var paperCandidateCount: Int { tokens.filter { $0.assessment.autoPaperEligible == true }.count }
+    var newMoverCount: Int {
+        tokens.filter { ($0.marketAgeSeconds ?? .max) <= 86_400 && $0.assessment.qualityScore >= 70 }.count
+    }
 
     func loadFeed() async {
         isLoading = tokens.isEmpty
         errorMessage = nil
         defer { isLoading = false }
         do {
-            let response = try await api.feed(kind: selectedFeed)
+            let response = try await api.feed(
+                kind: selectedFeed,
+                minQualityScore: minQualityScore == 0 ? nil : minQualityScore,
+                maxRiskScore: maxRiskScore == 0 ? nil : maxRiskScore,
+                minLiquidityUsd: minLiquidityUsd == 0 ? nil : minLiquidityUsd,
+                minMarketCapUsd: minMarketCapUsd == 0 ? nil : minMarketCapUsd,
+                minAgeMinutes: marketAgeFilter > 0 ? marketAgeFilter : nil,
+                maxAgeMinutes: marketAgeFilter == -1 ? 1_440 : nil,
+                minVolume5mUsd: minVolume5mUsd == 0 ? nil : minVolume5mUsd
+            )
             guard !Task.isCancelled else { return }
             tokens = response.tokens
-            lastUpdated = Date(timeIntervalSince1970: Double(response.fetchedAtMs) / 1_000)
+            sourceAgeMilliseconds = response.ageMilliseconds ?? response.ageSeconds * 1_000
+            lastUpdated = Date(timeIntervalSince1970: Double(response.computedAtMs ?? response.fetchedAtMs) / 1_000)
         } catch is CancellationError {
             return
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+
+    func runLiveFeed() async {
+        while !Task.isCancelled {
+            await loadFeed()
+            do {
+                try await Task.sleep(for: .seconds(1))
+            } catch {
+                return
+            }
         }
     }
 

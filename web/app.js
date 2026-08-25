@@ -67,7 +67,8 @@
     let res;
     try {
       res = await fetch(path, options);
-    } catch {
+    } catch (error) {
+      if (error?.name === "AbortError") throw error;
       throw new Error(UNREACHABLE());
     }
     let body = null;
@@ -99,7 +100,19 @@
   const state = {
     route: { name: "discover" },
     settings: null,
-    filters: { search: "", risk: "", minLiquidityUsd: "", tradeSizeSol: null, feedKind: "recent" },
+    filters: {
+      search: "",
+      risk: "",
+      minLiquidityUsd: "",
+      minMarketCapUsd: "",
+      marketAge: "",
+      minVolume5mUsd: "5000",
+      minQualityScore: "70",
+      maxRiskScore: "45",
+      sort: "score",
+      tradeSizeSol: null,
+      feedKind: "trending",
+    },
     gateReports: new Map(),
     modalOpen: false,
   };
@@ -916,10 +929,25 @@
   }
 
   // ---------- Discover ----------
-  async function renderDiscover(container) {
-    const params = new URLSearchParams({ kind: state.filters.feedKind, limit: "60" });
-    if (state.filters.minLiquidityUsd) params.set("minLiquidityUsd", state.filters.minLiquidityUsd);
+  function liveFeedParams() {
+    const params = new URLSearchParams({
+      kind: state.filters.feedKind,
+      limit: "60",
+      sort: state.filters.sort || "score",
+    });
+    for (const key of ["minLiquidityUsd", "minMarketCapUsd", "minVolume5mUsd", "minQualityScore", "maxRiskScore"]) {
+      if (state.filters[key]) params.set(key, state.filters[key]);
+    }
     if (state.filters.search) params.set("search", state.filters.search);
+    if (state.filters.marketAge === "new24h") params.set("maxAgeMinutes", "1440");
+    if (state.filters.marketAge === "age1h") params.set("minAgeMinutes", "60");
+    if (state.filters.marketAge === "age1d") params.set("minAgeMinutes", "1440");
+    if (state.filters.marketAge === "age7d") params.set("minAgeMinutes", "10080");
+    return params;
+  }
+
+  async function renderDiscover(container) {
+    const params = liveFeedParams();
 
     const [feed, portfolio, personalWatchlist] = await Promise.all([
       api(`/v1/feed?${params}`),
@@ -934,20 +962,26 @@
       ${searchBoxHtml()}
       <div class="live-feed-head">
         <div>
-          <div class="eyebrow">LIVE SOLANA DISCOVERY</div>
-          <h2>${state.filters.feedKind === "recent" ? "New token pools" : "Trending now"}</h2>
+          <div class="eyebrow">ACTIONABLE SOLANA SIGNALS</div>
+          <h2>${state.filters.feedKind === "recent" ? "New pools, confidence ranked" : "Five-minute trending, confidence first"}</h2>
           <p class="muted small">${esc(feed.notice)}</p>
         </div>
-        <div class="feed-pulse ${feed.reliability !== "fresh" ? "stale" : ""}"><i></i>${feed.reliability === "fresh" ? "LIVE" : "DELAYED"} · updated ${feed.ageSeconds}s ago</div>
+        <div class="feed-pulse ${feed.reliability !== "fresh" ? "stale" : ""}"><i></i><span class="live-age">${feed.reliability === "fresh" ? "LIVE" : "DELAYED"} · source age ${(feed.ageMilliseconds / 1000).toFixed(1)}s</span></div>
       </div>
 
       <div class="feed-tabs" role="tablist" aria-label="Live token feed">
-        <button class="${state.filters.feedKind === "recent" ? "active" : ""}" data-feed="recent" role="tab">New</button>
         <button class="${state.filters.feedKind === "trending" ? "active" : ""}" data-feed="trending" role="tab">Trending 5m</button>
+        <button class="${state.filters.feedKind === "recent" ? "active" : ""}" data-feed="recent" role="tab">Newest</button>
       </div>
 
       <div class="filters live-filters">
         <div class="search"><label class="field">FILTER THIS FEED</label><input type="text" id="fSearch" placeholder="Token, name, or mint…" value="${esc(state.filters.search)}"></div>
+        <div><label class="field">MIN LIVE SCORE</label><select id="fScore">
+          <option value="" ${state.filters.minQualityScore === "" ? "selected" : ""}>Show every score</option>
+          <option value="70" ${state.filters.minQualityScore === "70" ? "selected" : ""}>70+ actionable</option>
+          <option value="85" ${state.filters.minQualityScore === "85" ? "selected" : ""}>85+ smart watch</option>
+          <option value="90" ${state.filters.minQualityScore === "90" ? "selected" : ""}>90+ strongest only</option>
+        </select></div>
         <div><label class="field">MIN LIQUIDITY</label><select id="fLiq">
           <option value="">Any / newly detected</option>
           <option value="10000" ${state.filters.minLiquidityUsd === "10000" ? "selected" : ""}>$10k+</option>
@@ -955,9 +989,41 @@
           <option value="250000" ${state.filters.minLiquidityUsd === "250000" ? "selected" : ""}>$250k+</option>
           <option value="1000000" ${state.filters.minLiquidityUsd === "1000000" ? "selected" : ""}>$1M+</option>
         </select></div>
-        <div class="feed-source">${sourceBadge(feed.source)}<span class="tiny muted">Production floor: ${usd(feed.policy.minLiquidityUsd)} liquidity · ${esc(feed.policy.maxPriceImpactPct)}% max impact · ${esc(feed.policy.maxMarketAgeSeconds)}s max market age.</span></div>
+        <div><label class="field">MIN MARKET CAP</label><select id="fCap">
+          <option value="" ${state.filters.minMarketCapUsd === "" ? "selected" : ""}>Any reported cap</option>
+          <option value="100000" ${state.filters.minMarketCapUsd === "100000" ? "selected" : ""}>$100k+</option>
+          <option value="1000000" ${state.filters.minMarketCapUsd === "1000000" ? "selected" : ""}>$1M+</option>
+          <option value="10000000" ${state.filters.minMarketCapUsd === "10000000" ? "selected" : ""}>$10M+</option>
+        </select></div>
+        <div><label class="field">MARKET AGE</label><select id="fAge">
+          <option value="" ${state.filters.marketAge === "" ? "selected" : ""}>Any age</option>
+          <option value="new24h" ${state.filters.marketAge === "new24h" ? "selected" : ""}>New + trending · &lt;24h</option>
+          <option value="age1h" ${state.filters.marketAge === "age1h" ? "selected" : ""}>Established · 1h+</option>
+          <option value="age1d" ${state.filters.marketAge === "age1d" ? "selected" : ""}>Proven · 1d+</option>
+          <option value="age7d" ${state.filters.marketAge === "age7d" ? "selected" : ""}>Long-running · 7d+</option>
+        </select></div>
+        <div><label class="field">MIN 5M VOLUME</label><select id="fVolume">
+          <option value="" ${state.filters.minVolume5mUsd === "" ? "selected" : ""}>Any activity</option>
+          <option value="5000" ${state.filters.minVolume5mUsd === "5000" ? "selected" : ""}>$5k+</option>
+          <option value="25000" ${state.filters.minVolume5mUsd === "25000" ? "selected" : ""}>$25k+</option>
+          <option value="100000" ${state.filters.minVolume5mUsd === "100000" ? "selected" : ""}>$100k+</option>
+        </select></div>
+        <div><label class="field">MAX RISK</label><select id="fRisk">
+          <option value="" ${state.filters.maxRiskScore === "" ? "selected" : ""}>Any risk</option>
+          <option value="45" ${state.filters.maxRiskScore === "45" ? "selected" : ""}>45 · medium or less</option>
+          <option value="25" ${state.filters.maxRiskScore === "25" ? "selected" : ""}>25 · cautious</option>
+          <option value="15" ${state.filters.maxRiskScore === "15" ? "selected" : ""}>15 · strict</option>
+        </select></div>
+        <div><label class="field">RANK BY</label><select id="fSort">
+          <option value="score" ${state.filters.sort === "score" ? "selected" : ""}>Live score</option>
+          <option value="volume" ${state.filters.sort === "volume" ? "selected" : ""}>5m volume</option>
+          <option value="marketCap" ${state.filters.sort === "marketCap" ? "selected" : ""}>Market cap</option>
+          <option value="newest" ${state.filters.sort === "newest" ? "selected" : ""}>Newest first</option>
+        </select></div>
+        <div class="feed-source">${sourceBadge(feed.source)}<span class="tiny muted">Re-scored every second · production floor ${usd(feed.policy.minLiquidityUsd)} liquidity · ${esc(feed.policy.maxPriceImpactPct)}% max impact.</span></div>
       </div>
 
+      <div id="signalBoard" class="signal-board"></div>
       <div id="liveFeedList">${feed.tokens.length ? "" : `<div class="empty">No live tokens match these filters.</div>`}</div>
 
       <h2 class="portfolio-heading">Paper portfolio <span class="tiny muted">simulation-only learning account</span></h2>
@@ -970,9 +1036,40 @@
     `;
 
     const listEl = container.querySelector("#liveFeedList");
-    for (const token of feed.tokens) {
-      listEl.appendChild(liveTokenCard({ ...token, inWatchlist: watchedMints.has(token.mint) }));
-    }
+    const signalBoard = container.querySelector("#signalBoard");
+    const pulse = container.querySelector(".feed-pulse");
+    const liveAge = container.querySelector(".live-age");
+    let feedSignature = "";
+    const signatureFor = (value) => JSON.stringify(value.tokens.map((token) => [
+      token.mint,
+      token.priceUsd,
+      token.liquidityUsd,
+      token.marketCapUsd,
+      token.fiveMinuteVolumeUsd,
+      token.stats5m,
+      token.assessment,
+    ]));
+    const paintFreshness = (nextFeed) => {
+      pulse.classList.toggle("stale", nextFeed.reliability !== "fresh");
+      liveAge.textContent = `${nextFeed.reliability === "fresh" ? "LIVE" : "DELAYED"} · source age ${(nextFeed.ageMilliseconds / 1000).toFixed(1)}s`;
+    };
+
+    const paintFeed = (nextFeed) => {
+      const paperCandidates = nextFeed.tokens.filter((token) => token.assessment.autoPaperEligible);
+      const smartWatch = nextFeed.tokens.filter((token) => token.assessment.autoWatchEligible);
+      const newMovers = nextFeed.tokens.filter((token) => token.marketAgeSeconds !== null && token.marketAgeSeconds <= 86_400 && token.assessment.qualityScore >= 70);
+      signalBoard.innerHTML = `
+        <div class="signal-cell paper"><div class="signal-count">${paperCandidates.length}</div><div><b>Paper portfolio queue</b><span>90+ · mature · low risk · exact gates still required</span></div></div>
+        <div class="signal-cell watch"><div class="signal-count">${smartWatch.length}</div><div><b>Smart watchlist</b><span>85+ · strong evidence · added here automatically</span></div></div>
+        <div class="signal-cell new"><div class="signal-count">${newMovers.length}</div><div><b>New + moving</b><span>under 24h old with a 70+ live signal</span></div></div>`;
+      listEl.innerHTML = nextFeed.tokens.length ? "" : `<div class="empty">No live tokens match these filters.</div>`;
+      for (const token of nextFeed.tokens) {
+        listEl.appendChild(liveTokenCard({ ...token, inWatchlist: watchedMints.has(token.mint) }));
+      }
+      feedSignature = signatureFor(nextFeed);
+      paintFreshness(nextFeed);
+    };
+    paintFeed(feed);
 
     container.querySelectorAll("[data-feed]").forEach((button) => {
       button.addEventListener("click", () => {
@@ -991,8 +1088,53 @@
       render();
     });
 
-    // Wired after the view is attached, since it binds document-level events.
-    return wireSearch;
+    for (const [id, key] of [
+      ["fScore", "minQualityScore"],
+      ["fCap", "minMarketCapUsd"],
+      ["fAge", "marketAge"],
+      ["fVolume", "minVolume5mUsd"],
+      ["fRisk", "maxRiskScore"],
+      ["fSort", "sort"],
+    ]) {
+      container.querySelector(`#${id}`).addEventListener("change", (event) => {
+        state.filters[key] = event.target.value;
+        render();
+      });
+    }
+
+    // Wire global search and begin non-overlapping one-second market refreshes
+    // after the view is attached. Portfolio/watchlist requests are not repeated.
+    return () => {
+      wireSearch();
+      let stopped = false;
+      let timer = null;
+      let controller = null;
+      const tick = async () => {
+        controller = new AbortController();
+        try {
+          const nextFeed = await api(`/v1/feed?${liveFeedParams()}`, { signal: controller.signal });
+          if (!stopped && listEl.isConnected) {
+            const interacting = state.modalOpen
+              || listEl.contains(document.activeElement)
+              || Boolean(listEl.querySelector(".sm-gates:disabled, .score-details[open]"));
+            if (!interacting && signatureFor(nextFeed) !== feedSignature) paintFeed(nextFeed);
+            else paintFreshness(nextFeed);
+          }
+          if (!stopped) timer = setTimeout(tick, Math.max(1_000, nextFeed.refreshAfterMs || 1_000));
+        } catch (error) {
+          if (stopped || error.name === "AbortError") return;
+          pulse.classList.add("stale");
+          liveAge.textContent = "DELAYED · retrying live feed";
+          timer = setTimeout(tick, 5_000);
+        }
+      };
+      timer = setTimeout(tick, Math.max(1_000, feed.refreshAfterMs || 1_000));
+      return () => {
+        stopped = true;
+        clearTimeout(timer);
+        controller?.abort();
+      };
+    };
   }
 
   function liveTokenCard(token) {
@@ -1000,8 +1142,18 @@
     div.className = "opp-card live-token-card";
     const assessment = token.assessment;
     const firstSeen = token.firstPoolAtMs ? ago(token.firstPoolAtMs) : "time unavailable";
+    const marketAge = token.marketAgeSeconds == null
+      ? "age unavailable"
+      : token.marketAgeSeconds < 60
+        ? `${token.marketAgeSeconds}s old`
+        : token.marketAgeSeconds < 3_600
+          ? `${Math.floor(token.marketAgeSeconds / 60)}m old`
+          : token.marketAgeSeconds < 86_400
+            ? `${Math.floor(token.marketAgeSeconds / 3_600)}h old`
+            : `${Math.floor(token.marketAgeSeconds / 86_400)}d old`;
     const price = token.priceUsd == null ? "—" : `$${token.priceUsd}`;
     const liquidity = token.liquidityUsd == null ? "not reported" : usd(token.liquidityUsd);
+    const marketCap = token.marketCapUsd == null ? "not reported" : usd(token.marketCapUsd);
     const vol5m = token.fiveMinuteVolumeUsd == null ? "—" : usd(token.fiveMinuteVolumeUsd);
     const change5m = token.stats5m.priceChangePct;
     const statusLabel = assessment.status === "active" ? "CATALOG READY" : assessment.status === "thin" ? "THIN" : assessment.status === "stale" ? "STALE" : "DETECTED";
@@ -1015,30 +1167,47 @@
     const storedGateReport = state.gateReports.get(token.mint);
     const paperReady = livePaperReportIsUsable(storedGateReport);
     const fomoUrl = fomoCoinUrl(token.mint);
+    const signalChip = assessment.autoPaperEligible
+      ? `<span class="chip signal-paper">PAPER QUEUE</span>`
+      : assessment.autoWatchEligible
+        ? `<span class="chip signal-watch">SMART WATCH</span>`
+        : assessment.signal === "watch"
+          ? `<span class="chip signal-live">WATCH LIVE</span>`
+          : "";
+    const scoreBreakdown = (assessment.scoreBreakdown || [])
+      .map((part) => `<div><span>${esc(part.label)}</span><b>${part.score}/${part.maxScore}</b><small>${esc(part.detail)}</small></div>`)
+      .join("");
 
     div.innerHTML = `
       <div class="opp-emoji token-icon">${icon}</div>
       <div class="opp-main">
         <div class="opp-title">
+          <span class="live-rank">#${token.rank ?? "—"}</span>
           <span class="sym">${esc(token.symbol)}</span>
           <span class="muted small">${esc(token.name)}</span>
+          ${signalChip}
           <span class="chip ${assessment.status === "active" ? "live-chip" : "unver-chip"}">${statusLabel}</span>
           ${riskChip(assessment.riskLevel)}
         </div>
-        <div class="mint-line mono" title="${esc(token.mint)}">${esc(token.mint.slice(0, 8))}…${esc(token.mint.slice(-6))} · first pool ${firstSeen}${token.launchpad ? ` · ${esc(token.launchpad)}` : ""}</div>
+        <div class="mint-line mono" title="${esc(token.mint)}">${esc(token.mint.slice(0, 8))}…${esc(token.mint.slice(-6))} · ${marketAge} · first pool ${firstSeen}${token.launchpad ? ` · ${esc(token.launchpad)}` : ""}</div>
         <div class="opp-metrics mono">
           <span>Price <b>${esc(price)}</b></span>
           <span>5m <b class="${cls(change5m || 0)}">${change5m == null ? "—" : `${sign(change5m)}${esc(change5m)}%`}</b></span>
           <span>Vol 5m <b>${esc(vol5m)}</b></span>
           <span>Liquidity <b>${esc(liquidity)}</b></span>
+          <span>Market cap <b>${esc(marketCap)}</b></span>
           <span>Traders 5m <b>${token.stats5m.traders ?? "—"}</b></span>
+          <span>Trend <b>${esc(assessment.trendAlignment?.label ?? "—")}</b></span>
+          <span>Evidence <b>${assessment.confidenceScore}/100</b></span>
         </div>
         <div class="opp-why">${warnings || `<span class="fx positive">No immediate catalog warnings</span>`}</div>
         <div class="eligibility tiny muted">${esc(assessment.eligibility)}</div>
+        <details class="score-details"><summary>Why this score</summary><div class="score-grid">${scoreBreakdown}</div><p>Risk adjustment: −${Math.floor(assessment.riskScore / 5)} · live score is evidence-weighted, not a profit probability.</p></details>
         <div class="gate-check-out">${storedGateReport ? gateReportHtml(storedGateReport, true) : ""}</div>
       </div>
       <div class="opp-side">
-        <div class="opp-score"><div class="n">${assessment.qualityScore}</div><div class="d">RESEARCH / 100</div></div>
+        <div class="opp-score"><div class="n">${assessment.qualityScore}</div><div class="d">LIVE SCORE / 100</div></div>
+        <div class="tiny signal-action">${esc(assessment.actionLabel)}</div>
         ${freshness(token.updatedAgeSeconds ?? 999, token.reliability)}
         <div class="row" style="flex-wrap:wrap;justify-content:flex-end">
           <button class="star ${token.inWatchlist ? "active" : ""}" title="Watchlist" aria-label="Toggle watchlist">★</button>
@@ -2365,6 +2534,7 @@
 
   // ---------- render root ----------
   let renderSeq = 0;
+  let activeViewCleanup = null;
   async function render() {
     const seq = ++renderSeq;
     setActiveTab();
@@ -2387,10 +2557,15 @@
       else if (state.route.name === "settings") after = await renderSettings(target);
       else after = await renderDiscover(target);
       if (seq !== renderSeq) return; // a newer render superseded this one
+      activeViewCleanup?.();
+      activeViewCleanup = null;
       container.innerHTML = "";
       container.append(...target.children);
       container.dataset.loaded = "1";
-      if (typeof after === "function") after();
+      if (typeof after === "function") {
+        const cleanup = after();
+        if (typeof cleanup === "function") activeViewCleanup = cleanup;
+      }
     } catch (err) {
       if (seq !== renderSeq) return;
       container.innerHTML = `<div class="empty">⚠ ${esc(err.message)}<br><br><button class="btn secondary" id="renderRetry">Retry</button></div>`;

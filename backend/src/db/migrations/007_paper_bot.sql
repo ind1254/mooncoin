@@ -12,7 +12,7 @@ create table if not exists paper_bot_configs (
                              check (strategy_version = 'shadow-v1'),
   trade_size_micro_usd       bigint not null default 500000000
                              check (trade_size_micro_usd between 10000000 and 10000000000),
-  min_quality_score          smallint not null default 70
+  min_quality_score          smallint not null default 90
                              check (min_quality_score between 0 and 100),
   max_risk_score             smallint not null default 30
                              check (max_risk_score between 0 and 100),
