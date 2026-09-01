@@ -17,8 +17,43 @@ import { priceImpactFractionToBpsCeil } from "./units.js";
  * If Jupiter cannot answer, the quote is unavailable and the user is told.
  */
 export { priceImpactFractionToBpsCeil } from "./units.js";
-export const JUPITER_QUOTE_SOURCE = "jupiter:quote-v1";
+export const JUPITER_QUOTE_SOURCE_V1 = "jupiter:quote-v1";
+export const JUPITER_QUOTE_SOURCE_V2 = "jupiter:quote-v2";
+/** @deprecated Provenance is now derived from the version actually called. */
+export const JUPITER_QUOTE_SOURCE = JUPITER_QUOTE_SOURCE_V1;
+/** Keyless host. Serves V1 only. */
 export const DEFAULT_JUPITER_QUOTE_URL = "https://lite-api.jup.ag/swap/v1";
+/** Keyed host. Serves V2, and rate-limits hard without a key. */
+export const JUPITER_QUOTE_URL_V2 = "https://api.jup.ag/swap/v2";
+export const quoteSourceForVersion = (v) => v === "v2" ? JUPITER_QUOTE_SOURCE_V2 : JUPITER_QUOTE_SOURCE_V1;
+/**
+ * Read the API generation off the configured URL.
+ *
+ * Provenance has to describe the endpoint that actually answered, not a
+ * constant someone forgot to update — that is precisely how the stamp came to
+ * read `quote-v1` regardless of configuration. Returns null when the URL
+ * carries no recognisable version, leaving the caller to decide.
+ */
+export function inferApiVersionFromUrl(baseUrl) {
+    try {
+        const path = new URL(baseUrl).pathname.toLowerCase().replace(/\/+$/, "");
+        if (path.endsWith("/v2"))
+            return "v2";
+        if (path.endsWith("/v1") || path.endsWith("/v6"))
+            return "v1";
+        return null;
+    }
+    catch {
+        return null;
+    }
+}
+/** Slot numbers arrive as string or number depending on endpoint and field. */
+function toFiniteNumber(value) {
+    if (value == null)
+        return null;
+    const n = typeof value === "number" ? value : Number(value);
+    return Number.isFinite(n) ? n : null;
+}
 /** "7.5756902772" USD -> micro-USD, parsed as text to avoid float drift. */
 function usdStringToMicro(value) {
     const match = /^(\d+)(?:\.(\d+))?$/.exec(value.trim());
@@ -27,15 +62,23 @@ function usdStringToMicro(value) {
     const frac = ((match[2] ?? "") + "000000").slice(0, 6);
     return BigInt(match[1] ?? "0") * 1000000n + BigInt(frac);
 }
+const baseUnitString = z.string().regex(/^\d+$/);
 const routePlanSchema = z.array(z.object({
     swapInfo: z.object({
         ammKey: z.string(),
         label: z.string().optional(),
         inputMint: z.string(),
         outputMint: z.string(),
+        inAmount: baseUnitString.optional(),
+        outAmount: baseUnitString.optional(),
+        // Jupiter sends this as a string; tolerate a number too.
+        updateContextSlot: z.union([z.string(), z.number()]).nullish(),
     }),
     percent: z.number().optional(),
 }));
+const platformFeeSchema = z
+    .object({ amount: baseUnitString, feeBps: z.number() })
+    .nullish();
 const quoteSchema = z
     .object({
     inputMint: z.string(),
@@ -49,10 +92,44 @@ const quoteSchema = z
     routePlan: routePlanSchema,
     contextSlot: z.number().optional(),
     swapUsdValue: z.string().optional(),
+    platformFee: platformFeeSchema,
+    timeTaken: z.number().optional(),
+    instructionVersion: z.string().nullish(),
 })
     .passthrough();
+/**
+ * Fields that only ever appear on a transaction-building response. Moonpaper
+ * calls the quote endpoint exclusively, so seeing one of these means the URL
+ * has been pointed somewhere it must never point. Refuse the response rather
+ * than let an unsigned transaction reach the domain layer, a database, or a
+ * browser.
+ */
+const EXECUTION_FIELDS = ["swapTransaction", "transaction", "setupTransaction", "cleanupTransaction"];
+/**
+ * A configured base URL must be a quote host, never an execute one. Checked at
+ * construction so a misconfigured environment fails immediately and loudly
+ * instead of at the first trade.
+ */
+export function assertQuoteOnlyBaseUrl(baseUrl) {
+    const path = (() => {
+        try {
+            return new URL(baseUrl).pathname.toLowerCase();
+        }
+        catch {
+            throw new ArbError("VALIDATION_ERROR", `Invalid Jupiter base URL: ${baseUrl}`, 500);
+        }
+    })();
+    for (const banned of ["/swap", "/execute", "/order", "/send"]) {
+        // `/swap/v1` and `/swap/v2` are the API family names, not the execute
+        // endpoint; only a trailing segment would be the action itself.
+        if (path.endsWith(banned)) {
+            throw new ArbError("VALIDATION_ERROR", `Refusing a Jupiter base URL that points at an execution endpoint: ${baseUrl}`, 500);
+        }
+    }
+}
 export class JupiterQuoteProvider {
-    source = JUPITER_QUOTE_SOURCE;
+    source;
+    apiVersion;
     baseUrl;
     timeoutMs;
     quoteTtlMs;
@@ -61,7 +138,18 @@ export class JupiterQuoteProvider {
     fetchImpl;
     loader;
     constructor(options = {}) {
-        this.baseUrl = options.baseUrl ?? DEFAULT_JUPITER_QUOTE_URL;
+        // Precedence: an explicit version, then whatever the configured URL says,
+        // then the key (V2's host is unusable without one). Reading the URL keeps
+        // the provenance stamp honest when a deployment overrides the endpoint.
+        this.apiVersion =
+            options.apiVersion ??
+                (options.baseUrl ? inferApiVersionFromUrl(options.baseUrl) : null) ??
+                (options.apiKey ? "v2" : "v1");
+        this.baseUrl =
+            options.baseUrl ??
+                (this.apiVersion === "v2" ? JUPITER_QUOTE_URL_V2 : DEFAULT_JUPITER_QUOTE_URL);
+        assertQuoteOnlyBaseUrl(this.baseUrl);
+        this.source = quoteSourceForVersion(this.apiVersion);
         this.timeoutMs = options.timeoutMs ?? 8_000;
         this.quoteTtlMs = options.quoteTtlMs ?? 20_000;
         this.apiKey = options.apiKey;
@@ -133,7 +221,17 @@ export class JupiterQuoteProvider {
         if (!res.ok) {
             throw new ArbError("PROVIDER_ERROR", `Quote provider returned HTTP ${res.status}`, 502);
         }
-        const parsed = quoteSchema.safeParse(await res.json().catch(() => null));
+        const body = await res.json().catch(() => null);
+        // Defence in depth behind assertQuoteOnlyBaseUrl: if a response ever
+        // carries a transaction, discard it here rather than normalize around it.
+        if (body !== null && typeof body === "object") {
+            for (const field of EXECUTION_FIELDS) {
+                if (field in body) {
+                    throw new ArbError("MALFORMED_PROVIDER_RESPONSE", "Quote response carried transaction data; refusing it", 502);
+                }
+            }
+        }
+        const parsed = quoteSchema.safeParse(body);
         if (!parsed.success) {
             throw new ArbError("MALFORMED_PROVIDER_RESPONSE", "Unrecognized quote response", 502);
         }
@@ -159,13 +257,24 @@ export class JupiterQuoteProvider {
                 inputMint: hop.swapInfo.inputMint,
                 outputMint: hop.swapInfo.outputMint,
                 percent: hop.percent ?? 100,
+                inAmount: hop.swapInfo.inAmount != null ? BigInt(hop.swapInfo.inAmount) : null,
+                outAmount: hop.swapInfo.outAmount != null ? BigInt(hop.swapInfo.outAmount) : null,
+                updateContextSlot: toFiniteNumber(hop.swapInfo.updateContextSlot),
             })),
             swapUsdValueMicro: q.swapUsdValue ? usdStringToMicro(q.swapUsdValue) : null,
             contextSlot: q.contextSlot ?? null,
             swapMode: q.swapMode,
+            platformFee: q.platformFee
+                ? { amountBaseUnits: BigInt(q.platformFee.amount), feeBps: q.platformFee.feeBps }
+                : null,
             retrievedAtMs: now,
             expiresAtMs: now + this.quoteTtlMs,
-            source: JUPITER_QUOTE_SOURCE,
+            source: this.source,
+            apiVersion: this.apiVersion,
+            // Jupiter reports `timeTaken` in seconds.
+            providerLatencyMs: q.timeTaken != null ? Math.round(q.timeTaken * 1000) : null,
+            providerRequestId: res.headers.get("x-api-gateway-request-id"),
+            instructionVersion: q.instructionVersion ?? null,
         };
     }
 }

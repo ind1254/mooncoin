@@ -187,7 +187,9 @@ shape.
 Captured today: `inAmount`, `outAmount`, `minOutAmount` (slippage-adjusted
 threshold), `slippageBps`, `priceImpactBps`, the full `routePlan` with per-hop
 venue labels and split percentages, `swapUsdValueMicro`, `contextSlot`,
-`swapMode`, `retrievedAtMs`, and an application-owned `expiresAtMs`.
+`swapMode`, `platformFee`, per-hop `inAmount`/`outAmount`/`updateContextSlot`,
+`providerLatencyMs`, `providerRequestId` (trace header), `instructionVersion`,
+`apiVersion`, `retrievedAtMs`, and an application-owned `expiresAtMs`.
 
 `expiresAtMs` is **Moonpaper's** freshness policy, not something Jupiter
 returns — recorded so a later step can reject a stale quote.
@@ -197,6 +199,23 @@ Failures are classified rather than collapsed: `PROVIDER_TIMEOUT` (504),
 (409, for Jupiter's 400/404 "no route" answer), `MALFORMED_PROVIDER_RESPONSE`
 (502). A short cache (5s success, 3s failure, 20s rate-limit) absorbs
 double-clicks without ever showing a meaningfully out-of-date quote.
+
+### API generation and provenance
+
+The provider talks to Jupiter Swap **V1 by default and V2 when an API key is
+configured**. Jupiter documents V1/Metis as superseded, but V2 is served only
+from `api.jup.ag`, which without a key allows ~5 requests before 429 (measured
+2026-09-01); the keyless `lite-api` host does not serve V2 at all. The two
+quote responses are structurally identical, so V1 loses no data. Switching is a
+two-line env change (`JUPITER_QUOTE_URL` + `JUPITER_API_KEY`).
+
+Provenance is **derived from the URL actually called** via
+`inferApiVersionFromUrl()`, not stamped from a constant — the previous
+hardcoded `jupiter:quote-v1` was wrong for any overridden endpoint.
+
+Quote-only is enforced in code: `assertQuoteOnlyBaseUrl()` rejects a base URL
+ending in `/swap`, `/order`, `/execute` or `/send` at construction, and the
+response handler refuses any body carrying transaction fields.
 
 ### Provider unit semantics
 
