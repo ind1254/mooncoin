@@ -1,11 +1,22 @@
 # Moonpaper
 
+[![Backend](https://github.com/ind1254/mooncoin/actions/workflows/backend.yml/badge.svg)](https://github.com/ind1254/mooncoin/actions/workflows/backend.yml)
+[![iOS](https://github.com/ind1254/mooncoin/actions/workflows/ios.yml/badge.svg)](https://github.com/ind1254/mooncoin/actions/workflows/ios.yml)
+
 *Practice the moonshot — risk nothing.*
 
 A live-research and paper-trading application with a key-free handoff to FOMO
 for real execution. It answers one question:
 **"Based on current market conditions, what deserves my attention, what are the
 risks, and what would happen if I paper-traded it?"**
+
+> **On naming.** The product is **Moonpaper**; the Git repository is still
+> named `mooncoin` for historical reasons. Renaming the repository would break
+> the existing remote, the deployment link and any shared URLs, so the name is
+> left alone deliberately. Everything the repository itself controls — package
+> names, UI text, docs — says Moonpaper. The GitHub *description* still
+> mentions crypto arbitrage and should be updated in the repository settings;
+> that field cannot be set from code.
 
 > **Prototype — paper trading only.** Every trade is simulated with virtual funds.
 > No blockchain transactions are sent, no exchange orders are placed, no funds
