@@ -2,6 +2,7 @@ import { z } from "zod";
 import { ArbError } from "../../core/errors.js";
 import { CachedLoader } from "../cache.js";
 import { isPlausibleAddress } from "../solana/rpc.js";
+import { priceImpactFractionToBpsCeil } from "./units.js";
 
 /**
  * Read-only swap quotes from Jupiter.
@@ -16,6 +17,8 @@ import { isPlausibleAddress } from "../solana/rpc.js";
  * fabricated one presented as current would make the whole simulation a lie.
  * If Jupiter cannot answer, the quote is unavailable and the user is told.
  */
+
+export { priceImpactFractionToBpsCeil } from "./units.js";
 
 export const JUPITER_QUOTE_SOURCE = "jupiter:quote-v1";
 export const DEFAULT_JUPITER_QUOTE_URL = "https://lite-api.jup.ag/swap/v1";
@@ -66,24 +69,6 @@ export interface QuoteRequest {
 export interface QuoteProvider {
   readonly source: string;
   getQuote(req: QuoteRequest, signal?: AbortSignal): Promise<NormalizedSwapQuote>;
-}
-
-/**
- * Jupiter reports price impact as a decimal-percent string that can carry far
- * more precision than a float holds (e.g. "0.001366339669935170085524648").
- * Parsed as text and rounded UP, because impact is a cost to the user.
- */
-export function impactPercentToBpsCeil(pct: string): bigint {
-  const match = /^(-?)(\d+)(?:\.(\d+))?$/.exec(pct.trim());
-  if (!match) {
-    throw new ArbError("MALFORMED_PROVIDER_RESPONSE", `Unparseable price impact: ${pct}`, 502);
-  }
-  const whole = match[2] ?? "0";
-  const frac = ((match[3] ?? "") + "000000").slice(0, 6);
-  const scaledPercent = BigInt(whole) * 1_000_000n + BigInt(frac); // percent × 1e6
-  const bpsTimes1e6 = scaledPercent * 100n;
-  const rounded = (bpsTimes1e6 + 999_999n) / 1_000_000n;
-  return match[1] === "-" ? 0n : rounded; // negative impact is upside; treat as none
 }
 
 /** "7.5756902772" USD -> micro-USD, parsed as text to avoid float drift. */
@@ -242,7 +227,7 @@ export class JupiterQuoteProvider implements QuoteProvider {
       outAmount,
       minOutAmount: BigInt(q.otherAmountThreshold),
       slippageBps: BigInt(q.slippageBps),
-      priceImpactBps: impactPercentToBpsCeil(q.priceImpactPct),
+      priceImpactBps: priceImpactFractionToBpsCeil(q.priceImpactPct),
       routePlan: q.routePlan.map((hop) => ({
         ammLabel: hop.swapInfo.label ?? "Unknown venue",
         ammKey: hop.swapInfo.ammKey,

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { ArbError } from "../core/errors.js";
 import { USDC_MINT } from "../config/allowlist.js";
+import { priceImpactFractionToBpsCeil } from "../market/jupiter/units.js";
 import { PROVIDER_TIMEOUT_MS, QUOTE_TTL_MS, } from "./types.js";
 /**
  * Venue-specific quotes via Jupiter's quote API with the `dexes` filter
@@ -23,19 +24,6 @@ const quoteResponseSchema = z.object({
     outAmount: z.string().regex(/^\d+$/),
     priceImpactPct: z.string(),
 });
-/** Convert Jupiter's decimal percent string (e.g. "0.0834") to bps, rounding UP (impact is a cost). */
-export function percentStringToBpsCeil(pct) {
-    const match = /^-?(\d+)(?:\.(\d+))?$/.exec(pct.trim());
-    if (!match) {
-        throw new ArbError("MALFORMED_PROVIDER_RESPONSE", `Unparseable price impact: ${pct}`, 502);
-    }
-    const whole = match[1] ?? "0";
-    const frac = ((match[2] ?? "") + "000000").slice(0, 6); // percent with 6 frac digits
-    // percent * 100 = bps; value = whole.frac percent = (whole*1e6 + frac) / 1e6 percent
-    const scaled = BigInt(whole) * 1000000n + BigInt(frac); // percent * 1e6
-    const numerator = scaled * 100n; // bps * 1e6
-    return (numerator + 999999n) / 1000000n;
-}
 async function fetchQuote(params, signal) {
     const timeout = AbortSignal.timeout(PROVIDER_TIMEOUT_MS);
     const combined = AbortSignal.any([signal, timeout]);
@@ -87,7 +75,7 @@ export class JupiterVenueAdapter {
             inAmount: BigInt(raw.inAmount),
             outAmount: BigInt(raw.outAmount),
             feeMicroUsd: 0n, // embedded in outAmount by the router
-            priceImpactBps: percentStringToBpsCeil(raw.priceImpactPct),
+            priceImpactBps: priceImpactFractionToBpsCeil(raw.priceImpactPct),
             retrievedAtMs: now,
             expiresAtMs: now + QUOTE_TTL_MS,
         };

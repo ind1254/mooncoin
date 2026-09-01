@@ -3,7 +3,7 @@ import type { Server } from "node:http";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp, createTestDeps } from "../src/api/app.js";
-import { JupiterQuoteProvider, impactPercentToBpsCeil } from "../src/market/jupiter/quotes.js";
+import { JupiterQuoteProvider } from "../src/market/jupiter/quotes.js";
 import { JupiterTokenSearchProvider } from "../src/market/jupiter/tokenSearch.js";
 import { ResearchService } from "../src/market/research.js";
 import { SolanaRpcClient } from "../src/market/solana/rpc.js";
@@ -45,25 +45,25 @@ const req = (over: Partial<{ inputMint: string; outputMint: string; amount: bigi
   ...over,
 });
 
-describe("price impact parsing", () => {
-  it("parses high-precision decimal strings without float drift", () => {
-    // Jupiter returns values like this; parseFloat would lose the tail.
-    expect(impactPercentToBpsCeil("0.001366339669935170085524648")).toBe(1n);
-    expect(impactPercentToBpsCeil("0")).toBe(0n);
-    expect(impactPercentToBpsCeil("1")).toBe(100n);
-    expect(impactPercentToBpsCeil("0.5")).toBe(50n);
+describe("price impact conversion in context", () => {
+  // The unit contract itself is pinned in jupiterUnits.test.ts. This asserts
+  // the provider actually applies it, so a regression cannot slip through the
+  // normalization layer while the converter stays correct in isolation.
+  it("normalizes the recorded provider impact into basis points", async () => {
+    const raw = { ...fixture("quote-bonk-usdc"), priceImpactPct: "0.0134" };
+    const provider = quoteProvider(() => new Response(JSON.stringify(raw), { status: 200 }));
+    const quote = await provider.getQuote(req({ inputMint: BONK, outputMint: USDC }));
+    // 0.0134 is a fraction: 1.34% = 134 bps. Read as a percent it would be 2 bps.
+    expect(quote.priceImpactBps).toBe(134n);
   });
 
-  it("rounds up, because impact is a cost to the user", () => {
-    expect(impactPercentToBpsCeil("0.0001")).toBe(1n);
-  });
-
-  it("treats negative impact as zero rather than a discount", () => {
-    expect(impactPercentToBpsCeil("-0.5")).toBe(0n);
-  });
-
-  it("rejects an unparseable value instead of guessing", () => {
-    expect(() => impactPercentToBpsCeil("abc")).toThrow();
+  it("keeps a costly route above a 1% gate instead of under it", async () => {
+    // Regression: this token costs 3% to trade and must not pass a 100 bps limit.
+    const raw = { ...fixture("quote-bonk-usdc"), priceImpactPct: "0.03" };
+    const provider = quoteProvider(() => new Response(JSON.stringify(raw), { status: 200 }));
+    const quote = await provider.getQuote(req({ inputMint: BONK, outputMint: USDC }));
+    expect(quote.priceImpactBps).toBe(300n);
+    expect(quote.priceImpactBps > 100n).toBe(true);
   });
 });
 

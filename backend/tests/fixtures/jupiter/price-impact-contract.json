@@ -1,0 +1,29 @@
+{
+  "_note": "USDC->BONK size ladder. Pins that priceImpactPct is a decimal fraction (1 = 100%), not a percentage number.",
+  "_method": "Scale the smallest (near-mid) leg to each larger leg's size to predict zero-impact output; the shortfall is the measured impact. Compare to the reported field read as a fraction.",
+  "_recordedAt": "2026-09-01T02:24:22.833Z",
+  "pair": {
+    "inputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "outputMint": "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"
+  },
+  "legs": [
+    {
+      "label": "10k",
+      "inAmount": "10000000000",
+      "outAmount": "332086180000000",
+      "priceImpactPct": "0.0038866686618266282025339995"
+    },
+    {
+      "label": "1m",
+      "inAmount": "1000000000000",
+      "outAmount": "6589057775457193",
+      "priceImpactPct": "0.8023570781810204070511322506"
+    },
+    {
+      "label": "100m",
+      "inAmount": "100000000000000",
+      "outAmount": "4871059099290573",
+      "priceImpactPct": "0.9985388952631092763668273053"
+    }
+  ]
+}
