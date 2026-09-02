@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { MockVenueAdapter } from "../src/adapters/mock.js";
-import { percentStringToBpsCeil } from "../src/adapters/jupiter.js";
+import { priceImpactFractionToBpsCeil } from "../src/market/jupiter/units.js";
 import { ArbError } from "../src/core/errors.js";
 import { findBestRoundTrip, DEFAULT_CONFIG } from "../src/service/arbitrageService.js";
 import type { VerifiedToken } from "../src/core/types.js";
@@ -78,15 +78,15 @@ describe("round-trip orchestration", () => {
 });
 
 describe("provider response parsing", () => {
-  it("converts percent strings to bps rounding up", () => {
-    expect(percentStringToBpsCeil("0.05")).toBe(5n); // 0.05% = 5 bps
-    expect(percentStringToBpsCeil("1")).toBe(100n);
-    expect(percentStringToBpsCeil("0.0001")).toBe(1n); // rounds up, never 0 for nonzero impact
-    expect(percentStringToBpsCeil("0")).toBe(0n);
+  it("converts the provider fraction to bps, rounding up", () => {
+    expect(priceImpactFractionToBpsCeil("0.05")).toBe(500n); // fraction 0.05 = 5% = 500 bps
+    expect(priceImpactFractionToBpsCeil("1")).toBe(10_000n); // 1.0 = 100%
+    expect(priceImpactFractionToBpsCeil("0.0001")).toBe(1n); // rounds up, never 0 for nonzero impact
+    expect(priceImpactFractionToBpsCeil("0")).toBe(0n);
   });
 
   it("rejects malformed impact strings", () => {
-    expect(() => percentStringToBpsCeil("abc")).toThrow();
-    expect(() => percentStringToBpsCeil("")).toThrow();
+    expect(() => priceImpactFractionToBpsCeil("abc")).toThrow();
+    expect(() => priceImpactFractionToBpsCeil("")).toThrow();
   });
 });
