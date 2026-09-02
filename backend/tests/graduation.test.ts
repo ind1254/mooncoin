@@ -200,6 +200,35 @@ describe("graduation pass", () => {
     expect(second[0]?.firstPromotedAtMs).toBe(first[0]?.firstPromotedAtMs);
   });
 
+  it("demotes a token that no longer graduates", async () => {
+    // The shelf mirrors the predicate: a token that graduated on quality and
+    // has since decayed belongs back in discovery.
+    const strong = token({ ageMs: 2 * 60 * 60_000, holderCount: 50_000 });
+    const promoted = await runGraduationPass(passDeps([strong]));
+    expect(promoted.promoted).toBe(1);
+    expect(await repo.list()).toHaveLength(1);
+
+    const decayed = token({
+      ageMs: 2 * 60 * 60_000,
+      holderCount: 3,
+      liquidityUsdMicro: 1_000_000n,
+      weak: true,
+    });
+    const after = await runGraduationPass(passDeps([decayed]));
+    expect(after.demoted).toBe(1);
+    expect(await repo.list()).toHaveLength(0);
+  });
+
+  it("leaves a shelf entry alone when the provider stops listing it", async () => {
+    // Absence from a trending feed is not evidence a token stopped qualifying.
+    await runGraduationPass(passDeps([token({ ageMs: 200 * 86_400_000 })]));
+    expect(await repo.list()).toHaveLength(1);
+
+    const after = await runGraduationPass(passDeps([]));
+    expect(after.demoted).toBe(0);
+    expect(await repo.list()).toHaveLength(1);
+  });
+
   it("never writes to a user's own watchlist", async () => {
     // The shelf is system-owned; a person's picks stay theirs.
     await runGraduationPass(passDeps([token({ ageMs: 200 * 86_400_000 })]));

@@ -30,6 +30,7 @@ export interface GraduationWorkerDeps {
 export interface GraduationPassSummary {
   scanned: number;
   promoted: number;
+  demoted: number;
   byReason: { market_maturity: number; quality_threshold: number };
 }
 
@@ -41,11 +42,17 @@ export async function runGraduationPass(
   const summary: GraduationPassSummary = {
     scanned: 0,
     promoted: 0,
+    demoted: 0,
     byReason: { market_maturity: 0, quality_threshold: 0 },
   };
 
   // One mint can appear in more than one feed; promote it once per pass.
   const seen = new Set<string>();
+  // Shelf rows whose token we re-evaluated this pass and found no longer
+  // graduating. Collected rather than deleted inline so a mint appearing in
+  // two feeds cannot be demoted on one and promoted on the other.
+  const demote = new Set<string>();
+  const onShelf = new Set(await deps.autoWatch.listMints());
 
   for (const kind of kinds) {
     const feed = await deps.getFeed(kind);
@@ -71,9 +78,18 @@ export async function runGraduationPass(
         deps.policy,
         symbolMints.get(item.token.symbol.toLowerCase())?.size ?? 1,
       );
-      if (!assessment.graduated || assessment.graduationReason === null) continue;
+      if (!assessment.graduated || assessment.graduationReason === null) {
+        // The shelf mirrors the predicate exactly: one rule, so the feed and
+        // the shelf can never disagree about what has graduated. A token that
+        // graduated on quality and has since decayed belongs back in
+        // discovery. Maturity graduation never reverses on its own, because
+        // age only increases.
+        if (onShelf.has(item.token.mint)) demote.add(item.token.mint);
+        continue;
+      }
 
       seen.add(item.token.mint);
+      demote.delete(item.token.mint);
       await deps.autoWatch.promote({
         tokenMint: item.token.mint,
         reason: assessment.graduationReason,
@@ -86,6 +102,13 @@ export async function runGraduationPass(
       summary.promoted += 1;
       summary.byReason[assessment.graduationReason] += 1;
     }
+  }
+
+  // Only mints actually re-evaluated this pass are demoted. A shelf entry the
+  // provider has stopped listing is left alone: absence from a trending feed
+  // is not evidence that a token stopped qualifying.
+  for (const mint of demote) {
+    if (await deps.autoWatch.remove(mint)) summary.demoted += 1;
   }
 
   return summary;

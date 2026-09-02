@@ -944,6 +944,9 @@
     if (state.filters.marketAge === "age1h") params.set("minAgeMinutes", "60");
     if (state.filters.marketAge === "age1d") params.set("minAgeMinutes", "1440");
     if (state.filters.marketAge === "age7d") params.set("minAgeMinutes", "10080");
+    // Established coins live on the auto-watch shelf so Discover stays about
+    // tokens the user has not seen yet. This reveals them on demand.
+    if (state.filters.includeGraduated) params.set("includeGraduated", "true");
     return params;
   }
 
@@ -1059,13 +1062,30 @@
       const paperCandidates = nextFeed.tokens.filter((token) => token.assessment.autoPaperEligible);
       const smartWatch = nextFeed.tokens.filter((token) => token.assessment.autoWatchEligible);
       const newMovers = nextFeed.tokens.filter((token) => token.marketAgeSeconds !== null && token.marketAgeSeconds <= 86_400 && token.assessment.qualityScore >= 70);
+      const grad = nextFeed.graduated || { hidden: 0, included: false, qualityScore: 70, maturityDays: 30 };
       signalBoard.innerHTML = `
         <div class="signal-cell paper"><div class="signal-count">${paperCandidates.length}</div><div><b>Paper portfolio queue</b><span>90+ · mature · low risk · exact gates still required</span></div></div>
-        <div class="signal-cell watch"><div class="signal-count">${smartWatch.length}</div><div><b>Smart watchlist</b><span>85+ · strong evidence · added here automatically</span></div></div>
-        <div class="signal-cell new"><div class="signal-count">${newMovers.length}</div><div><b>New + moving</b><span>under 24h old with a 70+ live signal</span></div></div>`;
+        <div class="signal-cell watch"><div class="signal-count">${smartWatch.length}</div><div><b>Smart watchlist</b><span>85+ · strong evidence in this feed</span></div></div>
+        <div class="signal-cell new"><div class="signal-count">${newMovers.length}</div><div><b>New + moving</b><span>under 24h old with a 70+ live signal</span></div></div>
+        <div class="signal-cell graduated"><div class="signal-count">${grad.included ? "ON" : grad.hidden}</div><div><b>Auto-watch shelf</b><span>${grad.maturityDays}d+ old or ${grad.qualityScore}+ quality · kept out of Discover</span></div></div>`;
       listEl.innerHTML = nextFeed.tokens.length ? "" : `<div class="empty">No live tokens match these filters.</div>`;
+      if (grad.hidden > 0 || grad.included) {
+        const note = document.createElement("div");
+        note.className = "graduated-note";
+        note.innerHTML = grad.included
+          ? `Showing established coins. <button type="button" class="linkish" id="gradToggle">Hide them again</button>`
+          : `<b>${grad.hidden}</b> established ${grad.hidden === 1 ? "coin is" : "coins are"} on the auto-watch shelf, making room for new launches. <button type="button" class="linkish" id="gradToggle">Show them</button>`;
+        listEl.appendChild(note);
+      }
       for (const token of nextFeed.tokens) {
         listEl.appendChild(liveTokenCard({ ...token, inWatchlist: watchedMints.has(token.mint) }));
+      }
+      const gradToggle = listEl.querySelector("#gradToggle");
+      if (gradToggle) {
+        gradToggle.addEventListener("click", () => {
+          state.filters.includeGraduated = !state.filters.includeGraduated;
+          render();
+        });
       }
       feedSignature = signatureFor(nextFeed);
       paintFreshness(nextFeed);
