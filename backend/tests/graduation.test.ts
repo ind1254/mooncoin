@@ -13,7 +13,8 @@ import type { LiveFeedToken, LiveFeedWindow } from "../src/market/jupiter/liveFe
 import type { TradabilityPolicy } from "../src/market/tradability.js";
 
 /**
- * Graduation moves a token out of discovery and onto the auto-watch shelf.
+ * Graduation puts a token on the auto-watch shelf. Only maturity removes it
+ * from discovery; quality-qualified tokens remain visible there.
  *
  * The feature exists because the maturity pillar credits age and holder count,
  * so established meme coins carried a structural head start into a
@@ -119,6 +120,7 @@ describe("graduation predicate", () => {
     if (result.qualityScore >= GRADUATION_QUALITY_SCORE) {
       expect(result.graduated).toBe(true);
       expect(result.graduationReason).toBe("quality_threshold");
+      expect(result.hiddenFromDiscover).toBe(false);
     } else {
       expect(result.graduated).toBe(false);
     }
@@ -130,6 +132,7 @@ describe("graduation predicate", () => {
     const result = assess(established);
     expect(result.graduated).toBe(true);
     expect(result.graduationReason).toBe("market_maturity");
+    expect(result.hiddenFromDiscover).toBe(true);
   });
 
   it("leaves a genuinely new, weak token in discovery", () => {

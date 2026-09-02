@@ -215,4 +215,64 @@ describe("Jupiter live token feed", () => {
       }),
     ]);
   });
+
+  it("does not empty an actionable feed by hiding tokens that qualify on quality", async () => {
+    const qualityToken = {
+      ...token,
+      id: "So11111111111111111111111111111111111111112",
+      symbol: "QUALITY",
+      isVerified: true,
+      liquidity: 5_000_000,
+      mcap: 50_000_000,
+      holderCount: 100_000,
+      organicScore: 95,
+      createdAt: "2026-08-10T20:18:00Z",
+      updatedAt: "2026-08-17T20:17:59Z",
+      audit: {
+        mintAuthorityDisabled: true,
+        freezeAuthorityDisabled: true,
+        topHoldersPercentage: 5,
+      },
+      stats5m: {
+        priceChange: 5,
+        liquidityChange: 1,
+        volumeChange: 10,
+        buyVolume: 390_000,
+        sellVolume: 210_000,
+        numBuys: 1_300,
+        numSells: 700,
+        numTraders: 1_200,
+      },
+      stats1h: { priceChange: 8, buyVolume: 2_000_000, sellVolume: 1_500_000 },
+      stats24h: { priceChange: 15, buyVolume: 8_000_000, sellVolume: 6_000_000 },
+    };
+    const clock = () => NOW;
+    const deps = createTestDeps(clock);
+    deps.liveFeed = new JupiterLiveFeedProvider({
+      clock,
+      fetchImpl: async () => Response.json([qualityToken]),
+    });
+    const server = createApp(deps).listen(0);
+    servers.push(server);
+    const address = server.address();
+    const base = typeof address === "object" && address ? `http://127.0.0.1:${address.port}` : "";
+
+    const response = await fetch(`${base}/v1/feed?kind=trending&minQualityScore=70&sort=score`);
+    const body = await response.json() as {
+      graduated: { hidden: number };
+      tokens: Array<{ symbol: string; assessment: { graduationReason: string; hiddenFromDiscover: boolean } }>;
+    };
+
+    expect(response.status).toBe(200);
+    expect(body.graduated.hidden).toBe(0);
+    expect(body.tokens).toEqual([
+      expect.objectContaining({
+        symbol: "QUALITY",
+        assessment: expect.objectContaining({
+          graduationReason: "quality_threshold",
+          hiddenFromDiscover: false,
+        }),
+      }),
+    ]);
+  });
 });

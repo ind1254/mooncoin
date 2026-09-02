@@ -855,6 +855,30 @@ export class WatchlistRepository {
 }
 
 // ---------------------------------------------------------------------------
+// Per-account preferences (migration 015)
+// ---------------------------------------------------------------------------
+
+export class UserSettingsRepository {
+  constructor(private readonly db: SqlClient) {}
+
+  async get(userId: string): Promise<Record<string, unknown> | null> {
+    const rows = await this.db.query("select settings from user_settings where user_id = $1", [userId]);
+    return rows[0] ? readJsonObject(rows[0].settings) : null;
+  }
+
+  async put(userId: string, settings: Record<string, unknown>, nowMs: number): Promise<void> {
+    await this.db.query(
+      `insert into user_settings (user_id, settings, updated_at)
+       values ($1, $2::jsonb, to_timestamp($3::double precision / 1000))
+       on conflict (user_id) do update set
+         settings = excluded.settings,
+         updated_at = excluded.updated_at`,
+      [userId, JSON.stringify(settings), nowMs],
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Alerting (migration 005)
 // ---------------------------------------------------------------------------
 

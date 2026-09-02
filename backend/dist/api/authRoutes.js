@@ -4,7 +4,8 @@ import { z } from "zod";
 import { asArbError, ArbError } from "../core/errors.js";
 import { decimalToBaseUnits, microToUsdString } from "../core/money.js";
 import { credentialsSchema } from "../auth/authService.js";
-import { PortfolioRepository, PaperBotConfigRepository, PaperBotDecisionRepository, OwnerRepository, RateLimitRepository, WatchlistRepository, } from "../db/repositories.js";
+import { AlertEventRepository, PortfolioRepository, PaperBotConfigRepository, PaperBotDecisionRepository, OwnerRepository, RateLimitRepository, UserSettingsRepository, WatchlistRepository, } from "../db/repositories.js";
+import { accountSettingsSchema } from "../settings/settings.js";
 /**
  * Identity and per-user state.
  *
@@ -476,6 +477,76 @@ export function createAuthRouter(options) {
         }
     });
     // ---- Per-user state ----
+    const accountSettingsPatchSchema = accountSettingsSchema.partial();
+    router.get("/v1/me/settings", requireAuth, async (_req, res) => {
+        try {
+            const stored = await new UserSettingsRepository(getDb()).get(currentUser(res).id);
+            res.json({ settings: accountSettingsSchema.parse(stored ?? {}) });
+        }
+        catch (err) {
+            fail(res, err);
+        }
+    });
+    router.put("/v1/me/settings", requireAuth, async (req, res) => {
+        try {
+            const patch = accountSettingsPatchSchema.safeParse(req.body);
+            if (!patch.success) {
+                throw new ArbError("VALIDATION_ERROR", "Invalid settings", 400, {
+                    issues: patch.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`),
+                });
+            }
+            const repository = new UserSettingsRepository(getDb());
+            const current = accountSettingsSchema.parse((await repository.get(currentUser(res).id)) ?? {});
+            const settings = accountSettingsSchema.parse({
+                ...current,
+                ...patch.data,
+                notifications: {
+                    ...current.notifications,
+                    ...(patch.data.notifications ?? {}),
+                },
+            });
+            await repository.put(currentUser(res).id, { ...settings }, clock());
+            res.json({ settings });
+        }
+        catch (err) {
+            fail(res, err);
+        }
+    });
+    router.get("/v1/me/notifications", requireAuth, async (req, res) => {
+        try {
+            const parsed = z.object({ limit: z.coerce.number().int().min(1).max(100).default(50) }).safeParse(req.query);
+            if (!parsed.success)
+                throw new ArbError("VALIDATION_ERROR", "Invalid notification limit.", 400);
+            const events = new AlertEventRepository(getDb());
+            const notifications = await events.listForUser(currentUser(res).id, parsed.data.limit);
+            res.json({
+                unread: await events.unreadCount(currentUser(res).id),
+                notifications: notifications.map((event) => ({
+                    id: event.id,
+                    mint: event.mint,
+                    symbol: event.symbol,
+                    category: event.kind,
+                    title: event.title,
+                    reason: event.reason,
+                    severity: event.severity,
+                    createdAtMs: event.firedAtMs,
+                    read: event.readAtMs !== null,
+                })),
+            });
+        }
+        catch (err) {
+            fail(res, err);
+        }
+    });
+    router.post("/v1/me/notifications/mark-read", requireAuth, async (_req, res) => {
+        try {
+            const marked = await new AlertEventRepository(getDb()).markAllRead(currentUser(res).id, clock());
+            res.json({ ok: true, marked });
+        }
+        catch (err) {
+            fail(res, err);
+        }
+    });
     router.get("/v1/me/portfolio", requireAuth, async (_req, res) => {
         try {
             const user = currentUser(res);

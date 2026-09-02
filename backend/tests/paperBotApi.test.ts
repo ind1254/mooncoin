@@ -67,6 +67,7 @@ describe("paper-bot account API", () => {
     const initial = await call("GET", "/v1/me/paper-bot", undefined, signup.cookie);
     expect(initial.status).toBe(200);
     expect(initial.body.config.enabled).toBe(false);
+    expect(initial.body.config.minQualityScore).toBe(85);
     expect(initial.body.executionEnabled).toBe(false);
 
     const updated = await call("PUT", "/v1/me/paper-bot", settings, signup.cookie);

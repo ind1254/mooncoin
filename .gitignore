@@ -3,6 +3,8 @@ node_modules/
 
 # Runtime state (paper-trading persistence, logs)
 backend/data/
+backend/playwright-report/
+backend/test-results/
 *.log
 
 # Environment — never commit real values

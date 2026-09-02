@@ -2,25 +2,24 @@ import type { LiveFeedToken } from "./jupiter/liveFeed.js";
 import type { TradabilityPolicy } from "./tradability.js";
 
 /**
- * Why a token left the discovery feed for the auto-watch shelf.
+ * Why a token joined the automatic research shelf.
  *
- * Discovery exists to surface tokens the user has not seen yet. A token that
- * has already proved itself — or that has simply been trading for a month —
- * is no longer a discovery, and while it sits at the top of the feed it is
- * occupying a slot a genuinely new token could use.
+ * A strong score makes a token worth tracking but does not make it disappear
+ * from discovery. Only market maturity does that: an established token sitting
+ * at the top of the feed can occupy a slot a genuinely new launch could use.
  *
  * The maturity pillar in this module actively rewards age (8 points at 30
  * days) and holder count (4 points at 100k), so established tokens carry
  * roughly an 11-point head start out of 100 into a score-sorted feed. That
  * credit is deliberate and stays — it is honest about which tokens are
- * established. Graduation is the counterweight: the score keeps saying the
- * token is good, and the feed stops using that as a reason to show it again.
+ * established. Maturity hiding is the counterweight: the score keeps saying
+ * the token is good, while the discovery feed makes room for new launches.
  */
 export type GraduationReason = "market_maturity" | "quality_threshold";
 
 /** A token trading this long is established, whatever its score says. */
 export const GRADUATION_MATURITY_MS = 30 * 86_400_000;
-/** Quality at which a token has proved itself and moves to the shelf. */
+/** Quality at which a token is tracked on the shelf without leaving discovery. */
 export const GRADUATION_QUALITY_SCORE = 70;
 
 export interface LiveFeedAssessment {
@@ -34,10 +33,21 @@ export interface LiveFeedAssessment {
   actionLabel: string;
   autoWatchEligible: boolean;
   autoPaperEligible: boolean;
-  /** True when this token belongs on the auto-watch shelf, not in discovery. */
+  /** True when this token belongs on the auto-watch shelf. */
   graduated: boolean;
-  /** Why it graduated, or null while it is still a discovery candidate. */
+  /** Why it joined the shelf, or null while it is not automatically tracked. */
   graduationReason: GraduationReason | null;
+  /**
+   * Whether Discover should hide it. NOT the same as `graduated`.
+   *
+   * Only maturity hides a token. Quality graduation puts a token on the shelf
+   * so it is tracked, but leaves it in Discover, because hiding it there is
+   * self-defeating: the feed's own "70+ actionable" filter selects exactly the
+   * band a quality graduation removes, so the two together guarantee an empty
+   * list. Established coins are what crowd out new launches; a good new coin
+   * scoring 72 is the thing the user came to find.
+   */
+  hiddenFromDiscover: boolean;
   trendAlignment: {
     positiveWindows: number;
     measuredWindows: number;
@@ -416,6 +426,7 @@ export function assessLiveFeedToken(
     autoPaperEligible,
     graduated: graduationReason !== null,
     graduationReason,
+    hiddenFromDiscover: graduationReason === "market_maturity",
     trendAlignment: {
       positiveWindows,
       measuredWindows,
