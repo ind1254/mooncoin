@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { runGraduationPass, type GraduationPassSummary, type GraduationWorkerDeps } from "../market/graduation.js";
 import { runAlertPass, type AlertPassSummary, type AlertWorkerDeps } from "../alerts/worker.js";
 import { runPaperBotPass, type PaperBotPassSummary, type PaperBotWorkerDeps } from "../bot/worker.js";
 import type { WorkerLeaseRepository, WorkerLeaseCompletionStatus } from "../db/repositories.js";
@@ -12,6 +13,12 @@ type LeaseStore = Pick<WorkerLeaseRepository, "tryAcquire" | "complete">;
 export interface ScheduledWorkerDeps {
   alerts: AlertWorkerDeps;
   bot: PaperBotWorkerDeps;
+  /**
+   * Optional so existing callers and tests keep working. Absent means the
+   * shelf is not recorded; the feed still hides graduated tokens, because
+   * that check is pure and needs no database.
+   */
+  graduation?: GraduationWorkerDeps | undefined;
   leases: LeaseStore;
   clock?: () => number;
   log?: (line: Record<string, unknown>) => void;
@@ -26,7 +33,8 @@ export interface ScheduledWorkerPassResult {
   durationMs: number;
   alert: AlertPassSummary | null;
   bot: PaperBotPassSummary | null;
-  failedComponents: Array<"alerts" | "paper_bot">;
+  graduation: GraduationPassSummary | null;
+  failedComponents: Array<"alerts" | "paper_bot" | "graduation">;
   simulationOnly: true;
   executionEnabled: false;
 }
@@ -82,6 +90,7 @@ export async function runScheduledWorkerPass(
       durationMs: 0,
       alert: null,
       bot: null,
+      graduation: null,
       failedComponents: [],
       simulationOnly: true,
       executionEnabled: false,
@@ -90,7 +99,8 @@ export async function runScheduledWorkerPass(
 
   let alert: AlertPassSummary | null = null;
   let bot: PaperBotPassSummary | null = null;
-  const failedComponents: Array<"alerts" | "paper_bot"> = [];
+  let graduation: GraduationPassSummary | null = null;
+  const failedComponents: Array<"alerts" | "paper_bot" | "graduation"> = [];
 
   try {
     alert = await runAlertPass(deps.alerts);
@@ -118,6 +128,21 @@ export async function runScheduledWorkerPass(
     });
   }
 
+  if (deps.graduation) {
+    try {
+      graduation = await runGraduationPass(deps.graduation);
+    } catch (err) {
+      failedComponents.push("graduation");
+      log({
+        ts: new Date(clock()).toISOString(),
+        level: "error",
+        msg: "scheduled graduation pass failed",
+        runKey,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   const completedAtMs = clock();
   const result: ScheduledWorkerPassResult = {
     runKey,
@@ -128,6 +153,7 @@ export async function runScheduledWorkerPass(
     durationMs: Math.max(0, completedAtMs - startedAtMs),
     alert,
     bot,
+    graduation,
     failedComponents,
     simulationOnly: true,
     executionEnabled: false,

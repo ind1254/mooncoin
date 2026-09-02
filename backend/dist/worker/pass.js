@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { runGraduationPass } from "../market/graduation.js";
 import { runAlertPass } from "../alerts/worker.js";
 import { runPaperBotPass } from "../bot/worker.js";
 export const SCHEDULED_WORKER_NAME = "alerts-and-shadow-paper-bot-v1";
@@ -43,6 +44,7 @@ export async function runScheduledWorkerPass(deps, runKey) {
             durationMs: 0,
             alert: null,
             bot: null,
+            graduation: null,
             failedComponents: [],
             simulationOnly: true,
             executionEnabled: false,
@@ -50,6 +52,7 @@ export async function runScheduledWorkerPass(deps, runKey) {
     }
     let alert = null;
     let bot = null;
+    let graduation = null;
     const failedComponents = [];
     try {
         alert = await runAlertPass(deps.alerts);
@@ -77,6 +80,21 @@ export async function runScheduledWorkerPass(deps, runKey) {
             error: err instanceof Error ? err.message : String(err),
         });
     }
+    if (deps.graduation) {
+        try {
+            graduation = await runGraduationPass(deps.graduation);
+        }
+        catch (err) {
+            failedComponents.push("graduation");
+            log({
+                ts: new Date(clock()).toISOString(),
+                level: "error",
+                msg: "scheduled graduation pass failed",
+                runKey,
+                error: err instanceof Error ? err.message : String(err),
+            });
+        }
+    }
     const completedAtMs = clock();
     const result = {
         runKey,
@@ -87,6 +105,7 @@ export async function runScheduledWorkerPass(deps, runKey) {
         durationMs: Math.max(0, completedAtMs - startedAtMs),
         alert,
         bot,
+        graduation,
         failedComponents,
         simulationOnly: true,
         executionEnabled: false,

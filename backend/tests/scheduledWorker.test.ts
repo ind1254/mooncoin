@@ -53,6 +53,7 @@ function completedResult(runKey: string): ScheduledWorkerPassResult {
       providerFailures: 0,
       durationMs: 0,
     },
+    graduation: null,
     failedComponents: [],
     simulationOnly: true,
     executionEnabled: false,

@@ -1,3 +1,7 @@
+/** A token trading this long is established, whatever its score says. */
+export const GRADUATION_MATURITY_MS = 30 * 86_400_000;
+/** Quality at which a token has proved itself and moves to the shelf. */
+export const GRADUATION_QUALITY_SCORE = 70;
 export function sumLiveFeedVolume(token, window) {
     const value = token[window];
     if (value.buyVolumeUsdMicro === null && value.sellVolumeUsdMicro === null)
@@ -298,6 +302,14 @@ export function assessLiveFeedToken(token, nowMs, policy, duplicateSymbolCount) 
         risk <= 15 &&
         ageMs >= 86_400_000 &&
         marketCap >= 250000n * 1000000n;
+    // Maturity is checked first: it is a statement about the token's history and
+    // does not depend on today's score, so it is the more durable explanation
+    // when both apply.
+    const graduationReason = ageMs !== null && ageMs >= GRADUATION_MATURITY_MS
+        ? "market_maturity"
+        : quality >= GRADUATION_QUALITY_SCORE
+            ? "quality_threshold"
+            : null;
     const signal = autoPaperEligible
         ? "paper_candidate"
         : autoWatchEligible
@@ -327,6 +339,8 @@ export function assessLiveFeedToken(token, nowMs, policy, duplicateSymbolCount) 
         actionLabel,
         autoWatchEligible,
         autoPaperEligible,
+        graduated: graduationReason !== null,
+        graduationReason,
         trendAlignment: {
             positiveWindows,
             measuredWindows,

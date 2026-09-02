@@ -174,23 +174,44 @@ describe("Jupiter live token feed", () => {
     const address = server.address();
     const base = typeof address === "object" && address ? `http://127.0.0.1:${address.port}` : "";
 
-    const response = await fetch(
-      `${base}/v1/feed?kind=trending&minQualityScore=90&maxRiskScore=15&minMarketCapUsd=1000000&minAgeMinutes=1440&minVolume5mUsd=100000&sort=score`,
-    );
-    const body = await response.json() as {
+    const query =
+      "kind=trending&minQualityScore=90&maxRiskScore=15&minMarketCapUsd=1000000&minAgeMinutes=1440&minVolume5mUsd=100000&sort=score";
+    type FeedBody = {
       refreshAfterMs: number;
       ranking: { scoreVersion: string };
-      tokens: Array<{ symbol: string; rank: number; assessment: { autoPaperEligible: boolean } }>;
+      graduated: { hidden: number; included: boolean };
+      tokens: Array<{
+        symbol: string;
+        rank: number;
+        assessment: { autoPaperEligible: boolean; graduated: boolean; graduationReason: string | null };
+      }>;
     };
 
-    expect(response.status).toBe(200);
-    expect(body.refreshAfterMs).toBe(1_000);
-    expect(body.ranking.scoreVersion).toBe("live-v2");
-    expect(body.tokens).toEqual([
+    // STRONG is mature and high-scoring, so it has graduated to the auto-watch
+    // shelf. Discovery is for tokens the user has not seen; an established coin
+    // sitting at rank 1 is occupying a slot a new launch could use.
+    const hiddenRes = await fetch(`${base}/v1/feed?${query}`);
+    const hidden = await hiddenRes.json() as FeedBody;
+
+    expect(hiddenRes.status).toBe(200);
+    expect(hidden.refreshAfterMs).toBe(1_000);
+    expect(hidden.ranking.scoreVersion).toBe("live-v2");
+    expect(hidden.tokens).toEqual([]);
+    // Reported, not silently dropped, so the UI can say where it went.
+    expect(hidden.graduated).toEqual({ hidden: 1, included: false, qualityScore: 70, maturityDays: 30 });
+
+    const shownRes = await fetch(`${base}/v1/feed?${query}&includeGraduated=true`);
+    const shown = await shownRes.json() as FeedBody;
+
+    expect(shown.tokens).toEqual([
       expect.objectContaining({
         symbol: "STRONG",
         rank: 1,
-        assessment: expect.objectContaining({ autoPaperEligible: true }),
+        assessment: expect.objectContaining({
+          autoPaperEligible: true,
+          graduated: true,
+          graduationReason: "market_maturity",
+        }),
       }),
     ]);
   });

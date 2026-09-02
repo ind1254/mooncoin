@@ -28,10 +28,13 @@ import { JupiterQuoteProvider, type QuoteProvider } from "../market/jupiter/quot
 import { ResearchService, type ResearchProfile } from "../market/research.js";
 import { TradabilityService, type TradabilityCheck, type TradabilityPolicy } from "../market/tradability.js";
 import {
+  GRADUATION_MATURITY_MS,
+  GRADUATION_QUALITY_SCORE,
   assessLiveFeedToken,
   sumLiveFeedVolume,
   type LiveFeedAssessment,
 } from "../market/feedAssessment.js";
+import { AutoWatchRepository } from "../db/repositories.js";
 import { SolanaRpcClient } from "../market/solana/rpc.js";
 import type { TokenSearchResult } from "../market/types.js";
 import type {
@@ -908,6 +911,13 @@ export function createApp(deps: AppDeps): Express {
     minQualityScore: z.coerce.number().int().min(0).max(100).optional(),
     maxRiskScore: z.coerce.number().int().min(0).max(100).optional(),
     verifiedOnly: z.enum(["true", "false"]).transform((value) => value === "true").optional(),
+    /**
+     * Graduated tokens are hidden by default: discovery is for tokens the user
+     * has not seen, and an established coin sitting at the top of a
+     * score-sorted feed is occupying a slot a new launch could use. Opt in to
+     * inspect the shelf's contents against the live feed.
+     */
+    includeGraduated: z.enum(["true", "false"]).transform((value) => value === "true").optional(),
     sort: z.enum(["score", "volume", "marketCap", "newest"]).default("score"),
     search: z.string().max(80).optional(),
   }).refine(
@@ -987,6 +997,12 @@ export function createApp(deps: AppDeps): Express {
       if (q.data.verifiedOnly) {
         tokens = tokens.filter(({ item }) => item.token.verifiedByProvider);
       }
+      const graduatedCount = tokens.filter(({ assessment }) => assessment.graduated).length;
+      if (!q.data.includeGraduated) {
+        // Same predicate the worker persists on, so the feed and the shelf can
+        // never disagree about what has graduated.
+        tokens = tokens.filter(({ assessment }) => !assessment.graduated);
+      }
       if (q.data.search) {
         const needle = q.data.search.toLowerCase();
         tokens = tokens.filter(
@@ -1029,6 +1045,15 @@ export function createApp(deps: AppDeps): Express {
         reliability: feed.reliability,
         refreshAfterMs: 1_000,
         count: tokens.length,
+        graduated: {
+          // Reported rather than silently dropped, so the feed can say "3
+          // established coins are on the shelf" instead of leaving the user
+          // wondering where BONK went.
+          hidden: q.data.includeGraduated ? 0 : graduatedCount,
+          included: q.data.includeGraduated === true,
+          qualityScore: GRADUATION_QUALITY_SCORE,
+          maturityDays: Math.round(GRADUATION_MATURITY_MS / 86_400_000),
+        },
         ranking: {
           sort: q.data.sort,
           scoreVersion: "live-v2",
@@ -1458,6 +1483,60 @@ export function createApp(deps: AppDeps): Express {
         });
       }
       res.json({ settings: deps.settings.update(patch.data) });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  /**
+   * The auto-watch shelf: tokens that graduated out of discovery.
+   *
+   * Public and read-only. The shelf is system-owned, derived from global
+   * market data, and says nothing about any individual — so it is not behind
+   * auth, and it is deliberately separate from a user's own watchlist.
+   */
+  app.get("/v1/auto-watch", async (_req, res) => {
+    try {
+      if (!deps.db) {
+        // Degrades like every other persistence-backed feature: the feed still
+        // hides graduated tokens, because that check is pure.
+        res.json({
+          available: false,
+          reason: "Persistence is not configured, so the shelf is not recorded.",
+          items: [],
+          criteria: {
+            qualityScore: GRADUATION_QUALITY_SCORE,
+            maturityDays: Math.round(GRADUATION_MATURITY_MS / 86_400_000),
+          },
+        });
+        return;
+      }
+      const items = await new AutoWatchRepository(deps.db).list();
+      res.json({
+        available: true,
+        count: items.length,
+        criteria: {
+          qualityScore: GRADUATION_QUALITY_SCORE,
+          maturityDays: Math.round(GRADUATION_MATURITY_MS / 86_400_000),
+        },
+        notice:
+          "Tokens here left the discovery feed because they are established or already scored well. This is research context, not a recommendation.",
+        items: items.map((item) => ({
+          mint: item.tokenMint,
+          symbol: item.symbol,
+          name: item.name,
+          reason: item.reason,
+          reasonLabel:
+            item.reason === "market_maturity"
+              ? `Trading for ${Math.round(GRADUATION_MATURITY_MS / 86_400_000)}+ days`
+              : `Quality score reached ${GRADUATION_QUALITY_SCORE}`,
+          qualityScore: item.qualityScore,
+          riskScore: item.riskScore,
+          scoreVersion: item.scoreVersion,
+          promotedAt: new Date(item.firstPromotedAtMs).toISOString(),
+          lastSeenAt: new Date(item.lastSeenAtMs).toISOString(),
+        })),
+      });
     } catch (err) {
       fail(res, err);
     }
