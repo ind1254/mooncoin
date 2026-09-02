@@ -27,6 +27,67 @@ risks, and what would happen if I paper-traded it?"**
 > clearly labeled. Real trades are reviewed, authorized, and submitted by the
 > user inside FOMO, never by Moonpaper.
 
+## What is actually interesting here
+
+Moonpaper is a research and paper-trading platform for Solana meme-coins. The
+product is a decision aid; the engineering is about **not lying to the user**
+when the data is partial, stale, or wrong.
+
+| Area | The hard part |
+|---|---|
+| **Provider-unit normalization** | Jupiter types `priceImpactPct` as a bare `string` with no documented unit. It is a *fraction* (1 = 100%), which was verified empirically with a size ladder against the live endpoint rather than assumed — the previous reading was 100x too small and had silently disabled every price-impact safety gate. |
+| **Solana on-chain verification** | Holder concentration is measured by classifying each top holder's owner account as a keypair wallet or a program. Naively summing the top ten counts AMM pools and bonding curves as whales, which reports the *opposite* of the truth. |
+| **Explainable risk modelling** | A versioned, deterministic engine where every point is attributable, missing evidence is never treated as safe, and a chain read outranks a provider claim. No ML, no opaque score. |
+| **Fixed-point financial arithmetic** | No float ever touches a persisted money value. Base units, micro-USD, pico-USD, basis points — all `bigint`, parsed from provider strings as text, with costs always rounding up. |
+| **Exact-size quote simulation** | Paper fills are priced from a real quote at the real size, not a mid price. |
+| **Evidence provenance** | Every fact carries `verified` / `reported` / `derived` / `stale` / `unavailable`. A missing value is never a zero and never a default. |
+| **Time-series reasoning** | Bounded history with tiered downsampling, and deterministic risk-change explanations generated from stored facts rather than narrated by a model. |
+| **Concurrency and idempotency** | A worker lease prevents overlapping cron runs; every worker write is idempotent because a pass may be retried. |
+| **Provider degradation** | Failures are classified, not collapsed. Descriptive data may degrade to a labelled value; a quote may not, because a fabricated fill price would make the whole simulation a lie. |
+
+```mermaid
+flowchart TB
+    subgraph Clients
+        WEB["web/ - no-build SPA"]
+        IOS["ios/Moonpaper - SwiftUI"]
+    end
+    subgraph Vercel
+        API["api/index.js - Express"]
+        CRON["api/cron-worker.js - 1/min"]
+    end
+    subgraph Evidence["Evidence + scoring"]
+        SNAP["evidence/ - TokenEvidenceSnapshot"]
+        RISK["risk/engineV3 - versioned risk"]
+        DIFF["risk/diff - why risk moved"]
+        GATES["market/tradability - 7 gates"]
+    end
+    subgraph Providers["External, read-only"]
+        JTOK["Jupiter Tokens v2"]
+        JQ["Jupiter Swap quote"]
+        RPC["Solana JSON-RPC"]
+    end
+    PG[("Postgres - forward-only migrations")]
+
+    WEB --> API
+    IOS --> API
+    API --> SNAP
+    API --> GATES
+    CRON --> SNAP
+    SNAP --> RISK
+    RISK --> DIFF
+    SNAP --> JTOK
+    SNAP --> RPC
+    GATES --> JQ
+    RISK --> PG
+    DIFF --> PG
+```
+
+**The safety boundary is structural, not a policy.** The Jupiter integration
+calls `/quote` only; `assertQuoteOnlyBaseUrl()` refuses at construction any base
+URL ending in `/swap`, `/order`, `/execute` or `/send`, and the response handler
+rejects a body carrying transaction data. No code path ever holds a transaction
+to sign, so there is nothing to custody, sign, or submit.
+
 ## The five pillars
 
 | Pillar | What it does | Where |
@@ -292,3 +353,28 @@ immediately.
   disabled per account by default
 - No private keys or seed phrases, ever
 - No profit guarantees; simulated results are labeled simulated everywhere
+
+## Known limitations
+
+Stated plainly, because a research tool that hides its gaps is worse than one
+that has none.
+
+- **Wallet cohorts are unavailable, not zero.** Developer, insider, bundler,
+  sniper and smart-trader shares need a labelling provider that is not wired up.
+  They report as `unavailable` with a reason rather than as 0%, because unknown
+  and zero are different claims and only one of them is true.
+- **True mint creation time is unavailable.** Jupiter's first-pool timestamp is
+  a first *sighting*, not a creation time, and the two are never substituted.
+  Deriving the real one needs indexed transaction history.
+- **Metrics are per-instance.** `/admin/metrics` counters describe one
+  serverless instance since it started; instances recycle and the snapshot says
+  so rather than implying a global total.
+- **`backend/dist` is committed.** The root `postinstall` needs it to pre-exist,
+  and `vercel.json` ships it via `includeFiles`, so removing it requires
+  redesigning the build ordering first. CI fails if it drifts from source.
+- **Swap V2 needs an API key.** It is served only from `api.jup.ag`, which
+  allows roughly five keyless requests before rate-limiting, so V1 remains the
+  default and V2 activates when a key is configured.
+- **The repository is named `mooncoin`.** See the naming note above.
+- **Scores are not predictions.** They describe current conditions. Nothing here
+  is financial advice, and no part of the system executes a trade.

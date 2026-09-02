@@ -105,7 +105,7 @@ abstraction must be a strict superset — it must not flatten `verified` vs
 
 ---
 
-## Checkpoint 4 — Risk engine v3
+## Checkpoint 4 — Risk engine v3  ✅ **done**
 
 Versioned risk over structured evidence, returning `riskScore`,
 `riskConfidence`, `riskLevel`, `riskModelVersion`, `factors[]`,
@@ -159,7 +159,7 @@ level.
 
 ---
 
-## Checkpoint 7 — Historical token intelligence
+## Checkpoint 7 — Historical token intelligence  ✅ **done**
 
 Replace the overwrite-in-place `token_observations` (Finding 8) with a
 **bounded** history: high resolution for recent hours, medium for days, lower
@@ -174,7 +174,7 @@ this?*
 
 ---
 
-## Checkpoint 8 — Risk change explanations
+## Checkpoint 8 — Risk change explanations  ✅ **done**
 
 Deterministic snapshot-diff over structured evidence. No LLM.
 
@@ -242,12 +242,12 @@ report should treat the fix as a regime boundary.
   (`api/`, `state/`, `format/`, `charts/`, `views/*`, `components/`) preserving
   behavior. No React rewrite for fashion; keep the no-build simplicity while it
   earns its place. Test high-value pure helpers.
-- **13 — Observability.** Provider-level operational insight: Jupiter and RPC
+- **13 — Observability.** ✅ **done** — Provider-level operational insight: Jupiter and RPC
   request counts, latency, timeouts, 429s, malformed responses, cache
   hit/miss, tradability rejection-reason counts, worker duration and failures,
   bot decisions. Never log keys, passwords, session tokens, or recovery and
   verification tokens. Protected diagnostic view.
-- **14 — Portfolio quality.** README covering problem, product, architecture,
+- **14 — Portfolio quality.** ✅ **done** — README covering problem, product, architecture,
   live-data boundaries, paper-trading safety, Solana verification, execution
   intelligence, risk model, historical intelligence, bot, financial precision,
   concurrency, testing, CI, deployment, limitations — with a Mermaid diagram
