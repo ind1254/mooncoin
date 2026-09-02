@@ -1,15 +1,12 @@
--- The auto-watch shelf: tokens that have graduated out of discovery.
+-- The auto-watch shelf: tokens automatically selected for ongoing research.
 --
--- Discovery exists to surface tokens the user has not seen. Two kinds of token
--- stop being discoveries: one that has proved itself (quality >= 70), and one
--- that has simply been trading for a month. Both were previously ranked ABOVE
--- new tokens, because the maturity pillar credits age and holder count, so a
--- handful of established meme coins permanently occupied the top of a
--- score-sorted feed and new launches never got a slot.
+-- A quality score of 70 adds a token to the shelf without removing it from
+-- discovery. A token trading for a month is both shelved and hidden from the
+-- new-token feed. The distinction matters because the discovery screen itself
+-- defaults to 70+: hiding that same band would guarantee an empty result.
 --
--- This table is the durable half of the fix. The feed filters graduated tokens
--- out using the same predicate that writes here (see feedAssessment.ts), so
--- ranking and persistence can never disagree about what has graduated.
+-- This table is the durable half of the feature. Both the shelf predicate and
+-- the narrower maturity-only hiding predicate live in feedAssessment.ts.
 --
 -- Deliberately NOT tied to a user. Graduation is computed from global market
 -- data and says nothing about any individual's preferences, so it is a system

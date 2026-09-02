@@ -1,6 +1,6 @@
 /** A token trading this long is established, whatever its score says. */
 export const GRADUATION_MATURITY_MS = 30 * 86_400_000;
-/** Quality at which a token has proved itself and moves to the shelf. */
+/** Quality at which a token is tracked on the shelf without leaving discovery. */
 export const GRADUATION_QUALITY_SCORE = 70;
 export function sumLiveFeedVolume(token, window) {
     const value = token[window];
@@ -341,6 +341,7 @@ export function assessLiveFeedToken(token, nowMs, policy, duplicateSymbolCount) 
         autoPaperEligible,
         graduated: graduationReason !== null,
         graduationReason,
+        hiddenFromDiscover: graduationReason === "market_maturity",
         trendAlignment: {
             positiveWindows,
             measuredWindows,

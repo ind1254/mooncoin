@@ -96,6 +96,26 @@
   const put = (path, body) =>
     api(path, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 
+  const PUBLIC_DEFAULT_SETTINGS = {
+    defaultTradeSizeSol: 10,
+    riskPreference: "balanced",
+    maxPriceImpactBps: 100,
+    maxSlippageBps: 100,
+    minLiquidityUsd: 250000,
+    minTokenAgeDays: 7,
+    minOpportunityScore: 55,
+    positionAlertGainPct: 20,
+    positionAlertLossPct: 10,
+    notifications: {
+      opportunityMatch: true,
+      scoreChange: true,
+      liquidityDrop: true,
+      riskIncrease: true,
+      betterRoute: false,
+      positionThreshold: true,
+    },
+  };
+
   // ---------- state ----------
   const state = {
     route: { name: "discover" },
@@ -106,12 +126,13 @@
       minLiquidityUsd: "",
       minMarketCapUsd: "",
       marketAge: "",
-      minVolume5mUsd: "5000",
-      minQualityScore: "70",
-      maxRiskScore: "45",
+      minVolume5mUsd: "",
+      minQualityScore: "",
+      maxRiskScore: "",
       sort: "score",
       tradeSizeSol: null,
       feedKind: "trending",
+      includeGraduated: true,
     },
     gateReports: new Map(),
     portfolioRequestIds: new Map(),
@@ -119,9 +140,11 @@
   };
 
   async function loadSettings() {
-    const body = await api("/v1/settings");
-    state.settings = body.settings;
-    if (state.filters.tradeSizeSol == null) state.filters.tradeSizeSol = body.settings.defaultTradeSizeSol;
+    const settings = session.authenticated
+      ? (await api("/v1/me/settings")).settings
+      : { ...PUBLIC_DEFAULT_SETTINGS, notifications: { ...PUBLIC_DEFAULT_SETTINGS.notifications } };
+    state.settings = settings;
+    if (state.filters.tradeSizeSol == null) state.filters.tradeSizeSol = settings.defaultTradeSizeSol;
   }
 
   // ---------- routing ----------
@@ -130,8 +153,11 @@
     if (h.startsWith("verify-email/")) return { name: "verify-email", token: h.slice(13) };
     if (h.startsWith("reset-password/")) return { name: "reset-password", token: h.slice(15) };
     if (h.startsWith("research/")) return { name: "research", mint: h.slice(9) };
-    if (h.startsWith("token/")) return { name: "token", mint: h.slice(6) };
-    if (h === "portfolio" || h === "bot" || h === "settings" || h === "watchlist" || h === "simulator") return { name: h };
+    if (h.startsWith("sandbox/")) return { name: "sandbox-token", mint: h.slice(8) };
+    // Compatibility for links created before the deterministic demo was
+    // explicitly separated from live research.
+    if (h.startsWith("token/")) return { name: "sandbox-token", mint: h.slice(6) };
+    if (["portfolio", "bot", "settings", "watchlist", "simulator", "engineering"].includes(h)) return { name: h };
     return { name: "discover" };
   }
 
@@ -195,8 +221,11 @@
         await post("/v1/auth/signout").catch(() => undefined);
         session.authenticated = false;
         session.user = null;
+        state.settings = null;
+        await loadSettings().catch(() => undefined);
         renderAccountArea();
         toast(session.ownerMode ? "Moonpaper locked" : "Signed out");
+        refreshNotifications();
         render();
       });
   }
@@ -241,9 +270,12 @@
         keyInput.value = "";
         session.authenticated = true;
         session.user = body.user;
+        state.settings = null;
+        await loadSettings();
         closeModal();
         renderAccountArea();
         toast("Owner access unlocked", "ok");
+        refreshNotifications();
         render();
       } catch (e) {
         keyInput.value = "";
@@ -304,6 +336,8 @@
         const body = await post(`/v1/auth/${isSignUp ? "signup" : "signin"}`, { email, password });
         session.authenticated = true;
         session.user = body.user;
+        state.settings = null;
+        await loadSettings();
         closeModal();
         renderAccountArea();
         toast(
@@ -316,6 +350,7 @@
               : "Signed in",
           "ok",
         );
+        refreshNotifications();
         render();
       } catch (e) {
         err.textContent = e.message;
@@ -418,9 +453,11 @@
 
   function setActiveTab() {
     document.querySelectorAll("[data-nav]").forEach((b) => {
-      const target = ["token", "research", "verify-email", "reset-password"].includes(state.route.name)
-        ? "discover"
-        : state.route.name;
+      const target = state.route.name === "sandbox-token"
+        ? "simulator"
+        : ["research", "verify-email", "reset-password"].includes(state.route.name)
+          ? "discover"
+          : state.route.name;
       b.classList.toggle("active", b.dataset.nav === target);
     });
   }
@@ -933,7 +970,7 @@
   function liveFeedParams() {
     const params = new URLSearchParams({
       kind: state.filters.feedKind,
-      limit: "60",
+      limit: "100",
       sort: state.filters.sort || "score",
     });
     for (const key of ["minLiquidityUsd", "minMarketCapUsd", "minVolume5mUsd", "minQualityScore", "maxRiskScore"]) {
@@ -944,8 +981,8 @@
     if (state.filters.marketAge === "age1h") params.set("minAgeMinutes", "60");
     if (state.filters.marketAge === "age1d") params.set("minAgeMinutes", "1440");
     if (state.filters.marketAge === "age7d") params.set("minAgeMinutes", "10080");
-    // Established coins live on the auto-watch shelf so Discover stays about
-    // tokens the user has not seen yet. This reveals them on demand.
+    // Only established shelf entries leave Discover. Quality-qualified new
+    // coins remain visible; this toggle reveals mature coins on demand.
     if (state.filters.includeGraduated) params.set("includeGraduated", "true");
     return params;
   }
@@ -953,17 +990,22 @@
   async function renderDiscover(container) {
     const params = liveFeedParams();
 
-    const [feed, portfolio, personalWatchlist] = await Promise.all([
+    const [feed, accountPortfolio, personalWatchlist] = await Promise.all([
       api(`/v1/feed?${params}`),
-      api("/v1/paper/portfolio"),
+      session.authenticated ? api("/v1/me/portfolio") : Promise.resolve(null),
       session.authenticated ? api("/v1/me/watchlist") : Promise.resolve({ items: [] }),
     ]);
-    const s = portfolio.stats;
-    const unrl = num(s.totalUnrealizedPnlSol);
+    const portfolio = accountPortfolio?.portfolio ?? null;
     const watchedMints = new Set((personalWatchlist.items || []).map((item) => item.tokenMint));
 
     container.innerHTML = `
       ${searchBoxHtml()}
+      <div class="proof-strip" aria-label="Project engineering highlights">
+        <span><b>LIVE</b> Jupiter market feed</span>
+        <span><b>ON-CHAIN</b> Solana verification</span>
+        <span><b>467</b> passing tests</span>
+        <span><b>ZERO</b> wallet custody</span>
+      </div>
       <div class="live-feed-head">
         <div>
           <div class="eyebrow">ACTIONABLE SOLANA SIGNALS</div>
@@ -1030,14 +1072,19 @@
       <div id="signalBoard" class="signal-board"></div>
       <div id="liveFeedList">${feed.tokens.length ? "" : `<div class="empty">No live tokens match these filters.</div>`}</div>
 
-      <h2 class="portfolio-heading">Paper portfolio <span class="tiny muted">simulation-only learning account</span></h2>
-      <div class="summary-strip">
-        <div class="stat"><div class="k">VIRTUAL BALANCE</div><div class="v mono">${esc(portfolio.cashSol)} SOL</div><div class="s">simulated cash</div></div>
-        <div class="stat"><div class="k">PORTFOLIO VALUE</div><div class="v mono">${esc(portfolio.totalValueSol)} SOL</div><div class="s">started with ${esc(portfolio.startingBalanceSol)} SOL</div></div>
-        <div class="stat"><div class="k">OPEN P&amp;L</div><div class="v mono ${unrl > 0 ? "up" : unrl < 0 ? "down" : ""}">${sign(s.totalUnrealizedPnlSol)}${esc(s.totalUnrealizedPnlSol)} SOL</div><div class="s">${s.openCount} open position${s.openCount === 1 ? "" : "s"}</div></div>
-        <div class="stat"><div class="k">WIN RATE</div><div class="v mono">${s.closedCount ? s.winRatePct + "%" : "—"}</div><div class="s">${s.closedCount} closed paper trades</div></div>
-      </div>
+      <h2 class="portfolio-heading">Your saved account <span class="tiny muted">database-backed across sign-ins</span></h2>
+      ${portfolio
+        ? `<div class="summary-strip">
+            <div class="stat"><div class="k">PAPER CASH</div><div class="v mono">$${esc(portfolio.cashUsd)}</div><div class="s">simulated USD</div></div>
+            <div class="stat"><div class="k">PORTFOLIO VALUE</div><div class="v mono">${portfolio.totalValueUsd === null ? "Unavailable" : `$${esc(portfolio.totalValueUsd)}`}</div><div class="s">started with $${esc(portfolio.startingCashUsd)}</div></div>
+            <div class="stat"><div class="k">OPEN POSITIONS</div><div class="v mono">${portfolio.openPositions}</div><div class="s">saved to your account</div></div>
+            <div class="stat"><div class="k">WATCHLIST</div><div class="v mono">${personalWatchlist.count ?? personalWatchlist.items.length}</div><div class="s">saved coins</div></div>
+          </div>`
+        : `<div class="card"><div class="row spread" style="gap:12px;flex-wrap:wrap"><div><b>Sign in to keep your watchlist, settings, Bot Lab decisions, and paper positions.</b><div class="tiny muted" style="margin-top:5px">They will be restored whenever you sign back in.</div></div><button class="btn" id="discoverAccountBtn">Sign in</button></div></div>`}
     `;
+
+    const discoverAccountBtn = container.querySelector("#discoverAccountBtn");
+    if (discoverAccountBtn) discoverAccountBtn.addEventListener("click", openAccessModal);
 
     const listEl = container.querySelector("#liveFeedList");
     const signalBoard = container.querySelector("#signalBoard");
@@ -1067,7 +1114,7 @@
         <div class="signal-cell paper"><div class="signal-count">${paperCandidates.length}</div><div><b>Paper portfolio queue</b><span>90+ · mature · low risk · exact gates still required</span></div></div>
         <div class="signal-cell watch"><div class="signal-count">${smartWatch.length}</div><div><b>Smart watchlist</b><span>85+ · strong evidence in this feed</span></div></div>
         <div class="signal-cell new"><div class="signal-count">${newMovers.length}</div><div><b>New + moving</b><span>under 24h old with a 70+ live signal</span></div></div>
-        <div class="signal-cell graduated"><div class="signal-count">${grad.included ? "ON" : grad.hidden}</div><div><b>Auto-watch shelf</b><span>${grad.maturityDays}d+ old or ${grad.qualityScore}+ quality · kept out of Discover</span></div></div>`;
+        <div class="signal-cell graduated"><div class="signal-count">${grad.included ? "ON" : grad.hidden}</div><div><b>Established shelf</b><span>${grad.maturityDays}d+ old · hidden from Discover; ${grad.qualityScore}+ quality stays visible</span></div></div>`;
       listEl.innerHTML = nextFeed.tokens.length ? "" : `<div class="empty">No live tokens match these filters.</div>`;
       if (grad.hidden > 0 || grad.included) {
         const note = document.createElement("div");
@@ -1300,55 +1347,6 @@
     return div;
   }
 
-  function oppCard(o) {
-    const div = document.createElement("div");
-    div.className = "opp-card";
-    const why = (o.whyRanks || [])
-      .slice(0, 3)
-      .map((f) => `<span class="fx ${esc(f.direction)}" title="${esc(f.detail)}">${esc(f.label)}</span>`)
-      .join("");
-    div.innerHTML = `
-      <div class="opp-emoji">${esc(o.token.emoji)}</div>
-      <div class="opp-main">
-        <div class="opp-title">
-          <span class="sym">${esc(o.token.symbol)}</span>
-          <span class="muted small">${esc(o.token.name)}</span>
-          ${oppChip(o.opportunityLabel)} ${riskChip(o.riskLevel)} ${verifiedChip(o.verification)}
-        </div>
-        <div class="opp-metrics mono">
-          <span>Price <b>$${esc(o.priceUsd)}</b></span>
-          <span>1h <b class="${cls(o.change1hPct)}">${sign(o.change1hPct)}${esc(o.change1hPct)}%</b></span>
-          <span>Vol 1h <b>${usd(o.volume1hUsd)}</b> <b class="${cls(o.volumeChange1hPct)}">(${sign(o.volumeChange1hPct)}${esc(o.volumeChange1hPct)}%)</b></span>
-          <span>Liquidity <b>${usd(o.liquidityUsd)}</b></span>
-          ${o.bestRoute ? `<span>Impact <b>${esc(o.bestRoute.priceImpactPct)}%</b> via ${esc(o.bestRoute.venueName)}</span>` : `<span class="warn">No route</span>`}
-        </div>
-        <div class="opp-why">${why}</div>
-      </div>
-      <div class="opp-side">
-        <div class="opp-score"><div class="n">${o.scores.opportunity}</div><div class="d">QUALITY / 100</div></div>
-        ${freshness(o.dataAgeSeconds, o.dataReliability)}
-        <div class="row">
-          <button class="star ${o.inWatchlist ? "active" : ""}" title="Watchlist" aria-label="Toggle watchlist">★</button>
-          <button class="btn secondary sm-analyze">Analyze</button>
-          <button class="btn sm-trade">Paper trade</button>
-        </div>
-      </div>
-    `;
-    div.querySelector(".sm-analyze").addEventListener("click", () => (location.hash = `#/token/${o.token.mint}`));
-    div.querySelector(".sm-trade").addEventListener("click", () => openTradeModal(o.token.mint));
-    div.querySelector(".star").addEventListener("click", async (e) => {
-      try {
-        const body = await post("/v1/watchlist", { mint: o.token.mint, watched: !o.inWatchlist });
-        state.settings = body.settings;
-        render();
-      } catch (err) {
-        toast(err.message, "error");
-      }
-      e.stopPropagation();
-    });
-    return div;
-  }
-
   // ---------- Token research (any Solana token) ----------
   const metricRow = (label, value, source, hint) => `
     <div class="kv">
@@ -1376,7 +1374,11 @@
   }
 
   async function renderResearch(container, mint) {
-    const d = await api(`/v1/research/${encodeURIComponent(mint)}`);
+    const [d, personalWatchlist] = await Promise.all([
+      api(`/v1/research/${encodeURIComponent(mint)}`),
+      session.authenticated ? api("/v1/me/watchlist") : Promise.resolve({ items: [] }),
+    ]);
+    const isWatched = (personalWatchlist.items || []).some((item) => item.tokenMint === d.mint);
     const v = d.verification;
     const status = v ? v.status : "off";
     const meta = VERIFICATION[status] ?? VERIFICATION.off;
@@ -1432,7 +1434,7 @@
             <span class="muted">${esc(d.name)}</span>
             ${d.verifiedByProvider ? `<span class="chip live-chip">LISTED</span>` : `<span class="chip unver-chip">UNLISTED</span>`}
             <span class="chip risk-${esc(risk.level)}">RISK: ${esc(risk.level.toUpperCase())}</span>
-            <button class="btn secondary" id="watchBtn" style="padding:4px 12px;font-size:12px">☆ Watch</button>
+            <button class="btn secondary" id="watchBtn" style="padding:4px 12px;font-size:12px">${isWatched ? "★ Watching" : "☆ Watch"}</button>
           </div>
           <div class="rh-mint mono" title="The mint address is this token's only unique identifier">${esc(d.mint)}</div>
           <div class="rh-sub tiny muted">${d.decimals} decimals · ${esc((d.tokenProgram || "unknown program").slice(0, 24))}${d.tokenProgram && d.tokenProgram.length > 24 ? "…" : ""} · identity from ${esc(sourceInfo(d.identitySource).label)}</div>
@@ -1536,20 +1538,21 @@
     container.querySelector("#watchBtn").addEventListener("click", async () => {
       if (!session.authenticated) return openAccessModal();
       try {
-        await post("/v1/me/watchlist", { tokenMint: d.mint });
-        toast(`${d.symbol} added to your watchlist`, "ok");
-        const b = $("watchBtn");
-        if (b) {
-          b.textContent = "★ Watching";
-          b.disabled = true;
+        if (isWatched) {
+          await api(`/v1/me/watchlist/${encodeURIComponent(d.mint)}`, { method: "DELETE" });
+          toast(`${d.symbol} removed from your watchlist`);
+        } else {
+          await post("/v1/me/watchlist", { tokenMint: d.mint });
+          toast(`${d.symbol} added to your watchlist`, "ok");
         }
+        render();
       } catch (err) {
         toast(err.message, "error");
       }
     });
 
     const simBtn = container.querySelector("#simBtn");
-    if (simBtn) simBtn.addEventListener("click", () => (location.hash = `#/token/${d.mint}`));
+    if (simBtn) simBtn.addEventListener("click", () => (location.hash = `#/sandbox/${d.mint}`));
 
     const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
     let quoteTimer = null;
@@ -1658,8 +1661,8 @@
     });
   }
 
-  // ---------- Token detail ----------
-  async function renderToken(container, mint) {
+  // ---------- Deterministic demo token detail (isolated sandbox) ----------
+  async function renderSandboxToken(container, mint) {
     const size = state.filters.tradeSizeSol ?? 10;
     const d = await api(`/v1/tokens/${encodeURIComponent(mint)}?tradeSizeSol=${size}`);
     const sc = d.scores;
@@ -1686,7 +1689,8 @@
       </tr>`;
 
     container.innerHTML = `
-      <button class="back" id="backBtn">← Back to opportunities</button>
+      <div class="sandbox-banner"><b>Deterministic demo sandbox</b><span>This page uses seeded market scenarios and legacy SOL-denominated paper state. It is intentionally separate from live Research and your saved account.</span></div>
+      <button class="back" id="backBtn">← Back</button>
       <div class="detail-head">
         <div class="opp-emoji">${esc(d.token.emoji)}</div>
         <div>
@@ -1769,7 +1773,7 @@
       </div>
     `;
 
-    container.querySelector("#backBtn").addEventListener("click", () => (location.hash = "#/"));
+    container.querySelector("#backBtn").addEventListener("click", () => history.back());
     container.querySelectorAll(".evidence-toggle").forEach((btn) =>
       btn.addEventListener("click", () => {
         // Look up relative to the button — the container node is detached
@@ -1794,7 +1798,7 @@
       const amt = parseFloat($("tradeAmt").value);
       const slip = parseFloat($("tradeSlip").value);
       if (!Number.isFinite(amt) || amt <= 0) return toast("Enter a positive SOL amount", "error");
-      openTradeModal(d.token.mint, amt, Math.round(slip * 100));
+      openSandboxTradeModal(d.token.mint, amt, Math.round(slip * 100));
     });
 
     // Chart needs layout sizes — run after the view is attached to the DOM
@@ -1901,7 +1905,7 @@
   }
 
   // ---------- Trade confirmation modal ----------
-  async function openTradeModal(mint, amount, slippageBps) {
+  async function openSandboxTradeModal(mint, amount, slippageBps) {
     const size = amount ?? state.filters.tradeSizeSol ?? 10;
     const slip = slippageBps ?? state.settings?.maxSlippageBps ?? 100;
     let d;
@@ -2035,6 +2039,19 @@
     }
     const body = await api("/v1/me/paper-bot?limit=40");
     const c = body.config;
+    const candidateParams = new URLSearchParams({
+      kind: "trending",
+      limit: "10",
+      sort: "score",
+      includeGraduated: "true",
+      minQualityScore: String(c.minQualityScore),
+      maxRiskScore: String(c.maxRiskScore),
+      minLiquidityUsd: String(c.minLiquidityUsd),
+    });
+    const candidateFeed = await api(`/v1/feed?${candidateParams}`).catch(() => null);
+    const liveCandidates = (candidateFeed?.tokens || []).filter(
+      (token) => token.assessment.status === "active" && token.fiveMinuteVolumeUsd !== null,
+    );
     const pct = (bps) => Number(bps) / 100;
     const runStatus = c.lastRunStatus ?? "waiting";
     const decisionLabel = {
@@ -2077,6 +2094,26 @@
         </div>
       </div>
       <div class="sim-notice" style="margin:12px 0 16px"><b>Simulation only.</b> This bot cannot access a wallet, build a transaction, sign, submit, or move funds. Enabling it authorizes only automatic changes to your virtual Moonpaper portfolio.</div>
+
+      <div class="row spread" style="margin:22px 0 10px;flex-wrap:wrap">
+        <h3>Live candidate queue</h3>
+        <span class="tiny muted">Current catalog matches for this strategy · exact entry gates still apply</span>
+      </div>
+      <div class="bot-decisions">
+        ${candidateFeed === null
+          ? `<div class="empty">The live candidate feed is temporarily unavailable.</div>`
+          : liveCandidates.length
+            ? liveCandidates.map((token) => `
+              <div class="bot-decision">
+                <div class="row spread" style="align-items:flex-start;flex-wrap:wrap">
+                  <div><span class="chip bot-ok">CANDIDATE</span><b style="margin-left:7px">${esc(token.symbol)}</b><span class="tiny muted" style="margin-left:7px">${esc(token.name)}</span></div>
+                  <span class="tiny faint">Quality ${token.assessment.qualityScore}/100 · risk ${token.assessment.riskScore}/100</span>
+                </div>
+                <div class="small muted" style="margin-top:8px">${esc(token.assessment.eligibility)}</div>
+                <button class="back bot-research" data-mint="${esc(token.mint)}" style="margin-top:7px">Research mint →</button>
+              </div>`).join("")
+            : `<div class="empty">No live coin currently meets this strategy's quality, risk, liquidity, and freshness filters. The worker will keep checking every minute.</div>`}
+      </div>
 
       <div class="detail-grid bot-layout">
         <div class="card">
@@ -2186,18 +2223,63 @@
 
   // ---------- Watchlist ----------
   async function renderWatchlist(container) {
-    if (!session.authenticated) {
-      container.innerHTML = signInPrompt("your watchlist");
-      return wireSignInPrompt;
-    }
-    const list = await api("/v1/me/watchlist");
-    if (list.count === 0) {
-      container.innerHTML = `<h2>Watchlist</h2><div class="empty">Nothing saved yet.<br><span class="tiny faint">Research any token and press Watch to keep an eye on it.</span></div>`;
-      return;
-    }
+    const [automatic, list] = await Promise.all([
+      api("/v1/auto-watch"),
+      session.authenticated ? api("/v1/me/watchlist") : Promise.resolve({ count: 0, items: [] }),
+    ]);
+    const automaticItems = automatic.items || [];
     container.innerHTML = `
-      <h2>Watchlist <span class="tiny muted">${list.count} token${list.count === 1 ? "" : "s"} · live data fetched on open</span></h2>
-      <div id="wlList"></div>`;
+      <section class="watch-section">
+        <div class="row spread watchlist-heading">
+          <div>
+            <div class="eyebrow">AUTOMATIC RESEARCH SHELF</div>
+            <h2>Smart watchlist <span class="tiny muted">${automaticItems.length} tracked coin${automaticItems.length === 1 ? "" : "s"}</span></h2>
+          </div>
+          <span class="tiny muted">70+ quality or 30+ days old</span>
+        </div>
+        <p class="small muted">Moonpaper maintains this shared research shelf from the live feed. It is separate from your personal saved coins and is not a recommendation.</p>
+        <div id="autoWatchList" class="auto-watch-list">
+          ${automatic.available === false
+            ? `<div class="empty">${esc(automatic.reason || "The automatic shelf is temporarily unavailable.")}</div>`
+            : automaticItems.length
+              ? automaticItems.map((item) => `
+                <article class="opp-card smart-watch-card">
+                  <div class="opp-main">
+                    <div class="opp-title">
+                      <span class="sym">${esc(item.symbol || item.mint.slice(0, 8))}</span>
+                      <span class="muted small">${esc(item.name || "Solana token")}</span>
+                      <span class="chip signal-watch">SMART WATCH</span>
+                    </div>
+                    <div class="mint-line mono" title="${esc(item.mint)}">${esc(item.mint.slice(0, 8))}…${esc(item.mint.slice(-6))} · ${esc(item.reasonLabel)}</div>
+                    <div class="opp-metrics mono">
+                      <span>Live score <b>${item.qualityScore ?? "—"}/100</b></span>
+                      <span>Risk <b>${item.riskScore ?? "—"}/100</b></span>
+                      <span>Last matched <b>${ago(Date.parse(item.lastSeenAt))}</b></span>
+                    </div>
+                  </div>
+                  <div class="opp-side"><button class="btn secondary auto-watch-open" data-mint="${esc(item.mint)}">Research</button></div>
+                </article>`).join("")
+              : `<div class="empty">No coins are on the automatic shelf yet. The background scan will add them when they qualify.</div>`}
+        </div>
+      </section>
+
+      <section class="watch-section">
+        <div class="row spread watchlist-heading">
+          <h2>Your saved coins</h2>
+          ${session.authenticated ? `<span class="tiny muted">${list.count} token${list.count === 1 ? "" : "s"} · live data fetched on open</span>` : ""}
+        </div>
+        ${session.authenticated
+          ? `<div id="wlList">${list.count === 0 ? `<div class="empty">Nothing saved yet.<br><span class="tiny faint">Research any token and press Watch to keep an eye on it.</span></div>` : ""}</div>`
+          : signInPrompt("your personal saved coins")}
+      </section>`;
+
+    container.querySelectorAll(".auto-watch-open").forEach((button) =>
+      button.addEventListener("click", () => {
+        location.hash = `#/research/${button.dataset.mint}`;
+      }),
+    );
+
+    if (!session.authenticated) return wireSignInPrompt;
 
     // Only the mint is stored, so identity and market data are resolved live
     // rather than served from a stale copy in our database.
@@ -2274,6 +2356,7 @@
     };
 
     container.innerHTML = `
+      <div class="sandbox-banner"><b>Deterministic demo sandbox</b><span>Seeded scenarios for demonstrating fees, price impact, and P&amp;L. Nothing here is live or attached to your account.</span></div>
       <div class="summary-strip">
         <div class="stat"><div class="k">STARTING BALANCE</div><div class="v mono">${esc(p.startingBalanceSol)} SOL</div><div class="s">virtual</div></div>
         <div class="stat"><div class="k">AVAILABLE CASH</div><div class="v mono">${esc(p.cashSol)} SOL</div><div class="s">virtual</div></div>
@@ -2281,7 +2364,7 @@
         <div class="stat"><div class="k">REALIZED P&amp;L</div><div class="v mono ${cls(s.totalRealizedPnlSol)}">${sign(s.totalRealizedPnlSol)}${esc(s.totalRealizedPnlSol)} SOL</div><div class="s">${s.closedCount} closed</div></div>
         <div class="stat"><div class="k">UNREALIZED P&amp;L</div><div class="v mono ${cls(s.totalUnrealizedPnlSol)}">${sign(s.totalUnrealizedPnlSol)}${esc(s.totalUnrealizedPnlSol)} SOL</div><div class="s">${s.openCount} open</div></div>
       </div>
-      <div class="tiny warn" style="margin-bottom:14px">All values are simulated paper-trading results — no real funds are involved.</div>
+      <div class="tiny warn" style="margin-bottom:14px">All values are deterministic demo results — no real funds are involved and this sandbox is reset independently of signed-in data.</div>
 
       <h2>Open positions</h2>
       <div id="openList">${p.openPositions.length ? p.openPositions.map((x) => posCard(x, true)).join("") : `<div class="empty">No open paper positions. Find an opportunity on the Discover tab.</div>`}</div>
@@ -2340,8 +2423,70 @@
     );
   }
 
+  // ---------- Engineering case study (public recruiter view) ----------
+  function renderEngineering(container) {
+    container.innerHTML = `
+      <section class="engineering-hero">
+        <div>
+          <div class="eyebrow">FULL-STACK RESUME PROJECT</div>
+          <h2>Market evidence in. Explainable paper decisions out.</h2>
+          <p>Moonpaper is a production-deployed Solana research system built to make uncertainty visible. It combines live provider data, direct chain verification, exact fixed-point accounting, and durable account state without ever connecting to a wallet.</p>
+          <div class="engineering-actions">
+            <button class="btn" id="engineeringResearch">Explore live research</button>
+            <a class="btn secondary" href="https://github.com/ind1254/mooncoin" target="_blank" rel="noopener noreferrer">View source ↗</a>
+          </div>
+        </div>
+        <div class="engineering-scorecard" aria-label="Project metrics">
+          <div><b>467</b><span>passing tests</span></div>
+          <div><b>15</b><span>forward-only migrations</span></div>
+          <div><b>100</b><span>live feed candidates</span></div>
+          <div><b>0</b><span>real-trade code paths</span></div>
+        </div>
+      </section>
+
+      <section class="engineering-section">
+        <div class="eyebrow">SYSTEM ARCHITECTURE</div>
+        <h2>Independent evidence converges at one policy boundary</h2>
+        <div class="architecture-flow" aria-label="Moonpaper architecture flow">
+          <div class="architecture-node"><span>01 · PROVIDERS</span><b>Jupiter + Solana RPC</b><small>Tokens, executable quotes, mint authorities, holder evidence</small></div>
+          <i aria-hidden="true">→</i>
+          <div class="architecture-node"><span>02 · API</span><b>TypeScript + Express</b><small>Zod contracts, freshness checks, scoring, seven production gates</small></div>
+          <i aria-hidden="true">→</i>
+          <div class="architecture-node"><span>03 · STATE</span><b>PostgreSQL</b><small>Sessions, settings, watchlists, positions, alerts, bot audit</small></div>
+          <i aria-hidden="true">→</i>
+          <div class="architecture-node"><span>04 · EXPERIENCE</span><b>Research + Paper Lab</b><small>Traceable evidence, conservative fills, no custody or execution</small></div>
+        </div>
+      </section>
+
+      <section class="engineering-section">
+        <div class="eyebrow">ENGINEERING DECISIONS</div>
+        <h2>Built around correctness, failure handling, and honest boundaries</h2>
+        <div class="engineering-grid">
+          <article class="card"><h3>Exact financial arithmetic</h3><p>Balances use bigint micro-USD, prices use pico-USD, and token quantities remain integer base units. Persisted money never passes through floating-point arithmetic.</p></article>
+          <article class="card"><h3>Conservative paper fills</h3><p>Entries and exits use Jupiter's minimum received—not chart prices—and reject stale quotes. Idempotency keys prevent retries from spending virtual cash twice.</p></article>
+          <article class="card"><h3>Evidence over confidence theater</h3><p>Every score exposes its factors, source, freshness, and reliability. Missing facts remain unavailable instead of silently becoming safe defaults.</p></article>
+          <article class="card"><h3>Account-scoped persistence</h3><p>PostgreSQL restores settings, watchlists, paper positions, alerts, and Bot Lab decisions after refreshes, cold starts, and future sign-ins.</p></article>
+          <article class="card"><h3>Failure-aware providers</h3><p>Research degrades explicitly when Jupiter or Solana RPC is unavailable. A fabricated quote is never substituted where it could imply a fill.</p></article>
+          <article class="card"><h3>Safety as architecture</h3><p>The backend has no transaction builder, signer, wallet integration, or submission path. Automation can mutate only simulated portfolio records.</p></article>
+        </div>
+      </section>
+
+      <section class="engineering-section engineering-scope">
+        <div><div class="eyebrow">HONEST SCOPE</div><h2>What this project proves</h2><p>Full-stack product design, third-party API integration, database ownership boundaries, exact domain modeling, background automation, and test-driven reliability.</p></div>
+        <div><div class="eyebrow">WHAT IT DOES NOT CLAIM</div><h2>Paper trading—not a profit engine</h2><p>Scores describe current conditions. The project is not a durable chain indexer, does not predict returns, and never executes a real transaction.</p></div>
+      </section>`;
+
+    container.querySelector("#engineeringResearch").addEventListener("click", () => {
+      location.hash = "#/";
+    });
+  }
+
   // ---------- Settings ----------
   async function renderSettings(container) {
+    if (!session.authenticated) {
+      container.innerHTML = signInPrompt("your saved settings");
+      return wireSignInPrompt;
+    }
     const st = state.settings;
     const notif = st.notifications;
     container.innerHTML = `
@@ -2411,9 +2556,9 @@
             [...document.querySelectorAll("[data-notif]")].map((cb) => [cb.dataset.notif, cb.checked]),
           ),
         };
-        const body = await put("/v1/settings", patch);
+        const body = await put("/v1/me/settings", patch);
         state.settings = body.settings;
-        toast("Settings saved", "ok");
+        toast("Settings saved to your account", "ok");
       } catch (err) {
         toast(err.message, "error");
       }
@@ -2425,8 +2570,13 @@
     // Never fetch while the backend is known-unhealthy: the poll loop owns
     // recovery, and this must not become a second, unbounded retry path.
     if (poll.failures > 0) return;
+    if (!session.authenticated) {
+      $("notifBadge").classList.add("hidden");
+      $("notifList").innerHTML = `<div class="empty">Sign in to see your saved alerts.</div>`;
+      return;
+    }
     try {
-      const body = await api("/v1/notifications");
+      const body = await api("/v1/me/notifications");
       const badge = $("notifBadge");
       if (body.unread > 0) {
         badge.textContent = body.unread > 9 ? "9+" : String(body.unread);
@@ -2457,7 +2607,11 @@
   });
   $("drawerClose").addEventListener("click", () => $("drawer").classList.remove("open"));
   $("markReadBtn").addEventListener("click", async () => {
-    await post("/v1/notifications/mark-read");
+    if (!session.authenticated) {
+      openAccessModal();
+      return;
+    }
+    await post("/v1/me/notifications/mark-read");
     refreshNotifications();
   });
 
@@ -2575,11 +2729,12 @@
       if (state.route.name === "verify-email") after = await renderEmailVerification(target, state.route.token);
       else if (state.route.name === "reset-password") after = renderPasswordReset(target, state.route.token);
       else if (state.route.name === "research") after = await renderResearch(target, state.route.mint);
-      else if (state.route.name === "token") after = await renderToken(target, state.route.mint);
+      else if (state.route.name === "sandbox-token") after = await renderSandboxToken(target, state.route.mint);
       else if (state.route.name === "portfolio") after = await renderAccountPortfolio(target);
       else if (state.route.name === "bot") after = await renderBot(target);
       else if (state.route.name === "watchlist") after = await renderWatchlist(target);
       else if (state.route.name === "simulator") after = await renderPortfolio(target);
+      else if (state.route.name === "engineering") after = renderEngineering(target);
       else if (state.route.name === "settings") after = await renderSettings(target);
       else after = await renderDiscover(target);
       if (seq !== renderSeq) return; // a newer render superseded this one
@@ -2693,6 +2848,8 @@
 
   state.route = parseHash();
   // Session first: the rest of the UI depends on knowing who is asking.
-  loadSession().then(render);
-  refreshNotifications();
+  loadSession().then(() => {
+    refreshNotifications();
+    render();
+  });
 })();

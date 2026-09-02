@@ -312,6 +312,75 @@ describe("watchlist persistence", () => {
   });
 });
 
+describe("account settings persistence", () => {
+  it("restores settings after sign-out and a fresh sign-in", async () => {
+    const account = await signUp("settings@example.com");
+    const saved = await call(
+      "PUT",
+      "/v1/me/settings",
+      {
+        defaultTradeSizeSol: 22.5,
+        riskPreference: "conservative",
+        notifications: { scoreChange: false, betterRoute: true },
+      },
+      account.cookie,
+    );
+    expect(saved.status).toBe(200);
+    expect(saved.body.settings.defaultTradeSizeSol).toBe(22.5);
+    expect(saved.body.settings.notifications.scoreChange).toBe(false);
+    expect(saved.body.settings.notifications.betterRoute).toBe(true);
+    expect(saved.body.settings).not.toHaveProperty("watchlist");
+
+    await call("POST", "/v1/auth/signout", undefined, account.cookie);
+    const nextSession = await call("POST", "/v1/auth/signin", {
+      email: "settings@example.com",
+      password: "correct horse battery",
+    });
+    const restored = await call("GET", "/v1/me/settings", undefined, nextSession.cookie);
+    expect(restored.status).toBe(200);
+    expect(restored.body.settings.defaultTradeSizeSol).toBe(22.5);
+    expect(restored.body.settings.riskPreference).toBe("conservative");
+    expect(restored.body.settings.notifications.scoreChange).toBe(false);
+    expect(restored.body.settings.notifications.betterRoute).toBe(true);
+  });
+
+  it("keeps settings private and rejects anonymous access", async () => {
+    const alice = await signUp("settings-a@example.com");
+    const bob = await signUp("settings-b@example.com");
+    await call("PUT", "/v1/me/settings", { defaultTradeSizeSol: 44 }, alice.cookie);
+
+    expect((await call("GET", "/v1/me/settings")).status).toBe(401);
+    expect((await call("PUT", "/v1/me/settings", { defaultTradeSizeSol: 9 })).status).toBe(401);
+    expect((await call("GET", "/v1/me/settings", undefined, bob.cookie)).body.settings.defaultTradeSizeSol).toBe(10);
+  });
+});
+
+describe("account notification persistence", () => {
+  it("lists and marks only the signed-in user's durable alerts", async () => {
+    const alice = await signUp("alerts-a@example.com");
+    const bob = await signUp("alerts-b@example.com");
+    await db.query(
+      `insert into alert_events (user_id, mint, symbol, kind, title, reason, severity, fired_at)
+       values ($1, $2, 'BONK', 'price_change', 'Price moved', 'Crossed your saved threshold', 'info',
+               to_timestamp($3::double precision / 1000))`,
+      [alice.body.user.id, BONK, START],
+    );
+
+    const before = await call("GET", "/v1/me/notifications", undefined, alice.cookie);
+    expect(before.status).toBe(200);
+    expect(before.body.unread).toBe(1);
+    expect(before.body.notifications).toMatchObject([
+      { title: "Price moved", category: "price_change", read: false },
+    ]);
+    expect((await call("GET", "/v1/me/notifications", undefined, bob.cookie)).body.notifications).toEqual([]);
+
+    expect((await call("POST", "/v1/me/notifications/mark-read", {}, alice.cookie)).body.marked).toBe(1);
+    const after = await call("GET", "/v1/me/notifications", undefined, alice.cookie);
+    expect(after.body.unread).toBe(0);
+    expect(after.body.notifications[0].read).toBe(true);
+  });
+});
+
 describe("database guarantees", () => {
   it("stores session tokens hashed, never in the clear", async () => {
     const sessions = new SessionRepository(db);

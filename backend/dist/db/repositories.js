@@ -557,6 +557,26 @@ export class WatchlistRepository {
         return rows.length > 0;
     }
 }
+// ---------------------------------------------------------------------------
+// Per-account preferences (migration 015)
+// ---------------------------------------------------------------------------
+export class UserSettingsRepository {
+    db;
+    constructor(db) {
+        this.db = db;
+    }
+    async get(userId) {
+        const rows = await this.db.query("select settings from user_settings where user_id = $1", [userId]);
+        return rows[0] ? readJsonObject(rows[0].settings) : null;
+    }
+    async put(userId, settings, nowMs) {
+        await this.db.query(`insert into user_settings (user_id, settings, updated_at)
+       values ($1, $2::jsonb, to_timestamp($3::double precision / 1000))
+       on conflict (user_id) do update set
+         settings = excluded.settings,
+         updated_at = excluded.updated_at`, [userId, JSON.stringify(settings), nowMs]);
+    }
+}
 /** Defaults mirror the column defaults so an absent row behaves identically. */
 export const DEFAULT_NOTIFICATION_PREFERENCES = {
     inAppEnabled: true,

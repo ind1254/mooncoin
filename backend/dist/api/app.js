@@ -799,10 +799,9 @@ export function createApp(deps) {
         maxRiskScore: z.coerce.number().int().min(0).max(100).optional(),
         verifiedOnly: z.enum(["true", "false"]).transform((value) => value === "true").optional(),
         /**
-         * Graduated tokens are hidden by default: discovery is for tokens the user
-         * has not seen, and an established coin sitting at the top of a
-         * score-sorted feed is occupying a slot a new launch could use. Opt in to
-         * inspect the shelf's contents against the live feed.
+         * Established tokens are hidden by default: an old coin sitting at the top
+         * of a score-sorted discovery feed occupies a slot a new launch could use.
+         * Quality-only shelf entries stay visible. Opt in to include mature coins.
          */
         includeGraduated: z.enum(["true", "false"]).transform((value) => value === "true").optional(),
         sort: z.enum(["score", "volume", "marketCap", "newest"]).default("score"),
@@ -870,11 +869,11 @@ export function createApp(deps) {
             if (q.data.verifiedOnly) {
                 tokens = tokens.filter(({ item }) => item.token.verifiedByProvider);
             }
-            const graduatedCount = tokens.filter(({ assessment }) => assessment.graduated).length;
+            const graduatedCount = tokens.filter(({ assessment }) => assessment.hiddenFromDiscover).length;
             if (!q.data.includeGraduated) {
-                // Same predicate the worker persists on, so the feed and the shelf can
-                // never disagree about what has graduated.
-                tokens = tokens.filter(({ assessment }) => !assessment.graduated);
+                // Quality-qualified tokens stay discoverable. Only established coins
+                // are hidden from a feed intended to surface newer opportunities.
+                tokens = tokens.filter(({ assessment }) => !assessment.hiddenFromDiscover);
             }
             if (q.data.search) {
                 const needle = q.data.search.toLowerCase();
@@ -916,9 +915,9 @@ export function createApp(deps) {
                 refreshAfterMs: 1_000,
                 count: tokens.length,
                 graduated: {
-                    // Reported rather than silently dropped, so the feed can say "3
-                    // established coins are on the shelf" instead of leaving the user
-                    // wondering where BONK went.
+                    // Reported rather than silently dropped, so the feed can explain
+                    // where established coins went. Quality-only shelf entries remain
+                    // visible and therefore are not counted here.
                     hidden: q.data.includeGraduated ? 0 : graduatedCount,
                     included: q.data.includeGraduated === true,
                     qualityScore: GRADUATION_QUALITY_SCORE,
@@ -1481,7 +1480,7 @@ export function createApp(deps) {
         });
     });
     /**
-     * The auto-watch shelf: tokens that graduated out of discovery.
+     * The auto-watch shelf: tokens automatically selected for ongoing research.
      *
      * Public and read-only. The shelf is system-owned, derived from global
      * market data, and says nothing about any individual — so it is not behind
@@ -1491,7 +1490,7 @@ export function createApp(deps) {
         try {
             if (!deps.db) {
                 // Degrades like every other persistence-backed feature: the feed still
-                // hides graduated tokens, because that check is pure.
+                // hides mature tokens, because that check is pure.
                 res.json({
                     available: false,
                     reason: "Persistence is not configured, so the shelf is not recorded.",
@@ -1511,7 +1510,7 @@ export function createApp(deps) {
                     qualityScore: GRADUATION_QUALITY_SCORE,
                     maturityDays: Math.round(GRADUATION_MATURITY_MS / 86_400_000),
                 },
-                notice: "Tokens here left the discovery feed because they are established or already scored well. This is research context, not a recommendation.",
+                notice: "Tokens here are tracked because they are established or scored well. Only mature coins leave discovery; quality matches stay visible. This is research context, not a recommendation.",
                 items: items.map((item) => ({
                     mint: item.tokenMint,
                     symbol: item.symbol,

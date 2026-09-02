@@ -6,11 +6,23 @@ on:
     paths:
       - "backend/**"
       - "api/**"
+      - "web/**"
+      - "docs/**"
+      - "README.md"
+      - "PROJECT_SUMMARY.md"
+      - "package.json"
+      - "vercel.json"
       - ".github/workflows/backend.yml"
   pull_request:
     paths:
       - "backend/**"
       - "api/**"
+      - "web/**"
+      - "docs/**"
+      - "README.md"
+      - "PROJECT_SUMMARY.md"
+      - "package.json"
+      - "vercel.json"
       - ".github/workflows/backend.yml"
 
 # A superseded run on the same branch has nothing left to tell us.
@@ -47,11 +59,23 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Validate browser JavaScript
+        run: node --check ../web/app.js
+
+      - name: Audit production dependencies
+        run: npm run audit:prod
+
       # --maxWorkers=4 is load-bearing, not tuning: each suite spins up its own
       # PGlite instance, and unbounded concurrency makes the migration hooks
       # time out and report failures that are not real.
       - name: Test
         run: npm test
+
+      - name: Install browser for account journey
+        run: npx playwright install --with-deps chromium
+
+      - name: Test login persistence in a real browser
+        run: npm run test:e2e
 
       - name: Build
         run: npm run build
@@ -74,3 +98,11 @@ jobs:
             exit 1
           fi
           echo "dist is in sync with source"
+
+      - name: Upload browser-test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: backend/playwright-report/
+          retention-days: 14

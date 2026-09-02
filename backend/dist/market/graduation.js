@@ -33,11 +33,9 @@ export async function runGraduationPass(deps) {
                 continue;
             const assessment = assessLiveFeedToken(item, nowMs, deps.policy, symbolMints.get(item.token.symbol.toLowerCase())?.size ?? 1);
             if (!assessment.graduated || assessment.graduationReason === null) {
-                // The shelf mirrors the predicate exactly: one rule, so the feed and
-                // the shelf can never disagree about what has graduated. A token that
-                // graduated on quality and has since decayed belongs back in
-                // discovery. Maturity graduation never reverses on its own, because
-                // age only increases.
+                // A token that joined on quality and has since decayed leaves the
+                // shelf. Maturity graduation never reverses on its own, because age
+                // only increases.
                 if (onShelf.has(item.token.mint))
                     demote.add(item.token.mint);
                 continue;

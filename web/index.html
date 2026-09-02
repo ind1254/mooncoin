@@ -4,32 +4,46 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Moonpaper — Live Solana Token Research & Paper Trading</title>
+  <meta name="description" content="A full-stack Solana research and paper-trading project with explainable scoring, live Jupiter quotes, on-chain verification, and account-backed simulation.">
+  <meta name="theme-color" content="#0d0f14">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://mooncoin-two.vercel.app/">
+  <meta property="og:title" content="Moonpaper — Live Solana Research & Paper Trading">
+  <meta property="og:description" content="Explainable token research, conservative live-quote paper trading, and a strict no-custody safety boundary.">
+  <meta property="og:image" content="https://mooncoin-two.vercel.app/og.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Moonpaper — Live Solana Research & Paper Trading">
+  <meta name="twitter:description" content="Explainable token research, conservative live-quote paper trading, and a strict no-custody safety boundary.">
+  <meta name="twitter:image" content="https://mooncoin-two.vercel.app/og.png">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+  <a class="skip-link" href="#view">Skip to content</a>
   <div class="banner" id="dataBanner">LIVE SOLANA RESEARCH — market data is live, all trades are simulated, live execution is disabled</div>
 
   <header class="topbar">
     <div class="logo">MOON<span>PAPER</span><small>SIMULATED TRADING</small></div>
-    <nav class="tabs">
+    <nav class="tabs" aria-label="Primary navigation">
       <button data-nav="discover" class="active">Research</button>
       <button data-nav="watchlist">Watchlist</button>
       <button data-nav="portfolio">Portfolio</button>
       <button data-nav="bot">Bot Lab</button>
-      <button data-nav="simulator">Simulator</button>
+      <button data-nav="simulator" class="demo-nav">Demo Sandbox</button>
       <button data-nav="settings">Settings</button>
+      <button data-nav="engineering">Engineering</button>
     </nav>
     <div id="accountArea" class="account-area"><span class="tiny faint">…</span></div>
     <button class="iconbtn" id="notifBtn" aria-label="Notifications">🔔<span class="badge hidden" id="notifBadge"></span></button>
   </header>
 
-  <main id="view" aria-live="polite"></main>
+  <main id="view" tabindex="-1" aria-live="polite"></main>
 
   <footer class="disclaimer">
     Moonpaper is a decision-support prototype. Every trade shown here is a simulation: no real funds are used,
     no blockchain transactions are sent, and no private keys are requested or stored. Scores describe current market
     conditions and are not predictions of future returns. Market conditions may change before any real execution would
     be possible, and simulated results will differ from actual trading results.
+    <span class="footer-links"><a href="https://github.com/ind1254/mooncoin" target="_blank" rel="noopener noreferrer">Source code ↗</a> · <a href="#/engineering">Engineering case study</a></span>
   </footer>
 
   <!-- Notifications drawer -->

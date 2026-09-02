@@ -1,3 +1,4 @@
+import { mkdir } from "node:fs/promises";
 import type { SqlClient } from "./client.js";
 
 /**
@@ -13,6 +14,7 @@ import type { SqlClient } from "./client.js";
  */
 export async function createLocalDevClient(dataDir: string): Promise<SqlClient | undefined> {
   try {
+    await mkdir(dataDir, { recursive: true });
     const [{ PGlite }, { createPgliteBackedClient }] = await Promise.all([
       import("@electric-sql/pglite"),
       import("./pgliteClient.js"),

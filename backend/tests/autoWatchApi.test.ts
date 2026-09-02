@@ -102,8 +102,8 @@ describe("GET /v1/auto-watch", () => {
   });
 
   it("degrades to an explained empty shelf without persistence", async () => {
-    // The feed still hides graduated tokens in this state, because that check
-    // is pure. Only the durable record is unavailable, and it says so.
+    // The feed still hides mature tokens in this state, because that check is
+    // pure. Only the durable record is unavailable, and it says so.
     await start(false);
     const res = await fetch(`${base}/v1/auto-watch`);
     const body = await res.json() as Record<string, any>;

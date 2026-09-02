@@ -6,14 +6,14 @@ import type { AutoWatchRepository } from "../db/repositories.js";
 /**
  * Promotes graduated tokens onto the auto-watch shelf.
  *
- * The discovery feed hides graduated tokens using the assessment's own
- * `graduated` flag, which is pure and needs no database. This pass is the
- * durable half: it records what graduated and when, so a token that later
- * drops out of the provider's trending feed does not silently vanish from the
- * shelf too.
+ * The assessment's `graduated` flag says whether a token belongs on this
+ * durable shelf. Its separate `hiddenFromDiscover` flag controls discovery:
+ * quality-qualified tokens remain visible, while 30-day-old tokens leave the
+ * new-token feed. This pass records both kinds so a token that later drops out
+ * of the provider's trending feed does not silently vanish from the shelf.
  *
- * Both halves read the same predicate from `feedAssessment.ts`, so ranking and
- * persistence cannot disagree about what has graduated.
+ * Both decisions come from `feedAssessment.ts`, so the API and worker cannot
+ * drift into contradictory definitions.
  *
  * Simulation-only, like everything else in the worker: this writes a research
  * shelf and never touches a position, a portfolio, or a user's own watchlist.
@@ -79,11 +79,9 @@ export async function runGraduationPass(
         symbolMints.get(item.token.symbol.toLowerCase())?.size ?? 1,
       );
       if (!assessment.graduated || assessment.graduationReason === null) {
-        // The shelf mirrors the predicate exactly: one rule, so the feed and
-        // the shelf can never disagree about what has graduated. A token that
-        // graduated on quality and has since decayed belongs back in
-        // discovery. Maturity graduation never reverses on its own, because
-        // age only increases.
+        // A token that joined on quality and has since decayed leaves the
+        // shelf. Maturity graduation never reverses on its own, because age
+        // only increases.
         if (onShelf.has(item.token.mint)) demote.add(item.token.mint);
         continue;
       }

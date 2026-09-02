@@ -80,6 +80,24 @@ describe("concentrated live feed assessment", () => {
       "maturity",
       "confidence",
     ]);
+    expect(assessment.hiddenFromDiscover).toBe(true);
+  });
+
+  it("keeps a quality-qualified new token in discovery while tracking it on the shelf", () => {
+    const base = token();
+    const newHighQuality = token({
+      token: {
+        ...base.token,
+        firstPoolAtMs: NOW - 7 * 86_400_000,
+      },
+      firstPoolAtMs: NOW - 7 * 86_400_000,
+    });
+    const assessment = assessLiveFeedToken(newHighQuality, NOW, POLICY, 1);
+
+    expect(assessment.qualityScore).toBeGreaterThanOrEqual(70);
+    expect(assessment.graduated).toBe(true);
+    expect(assessment.graduationReason).toBe("quality_threshold");
+    expect(assessment.hiddenFromDiscover).toBe(false);
   });
 
   it("keeps a thin, two-minute, sell-heavy token out of automatic surfaces", () => {

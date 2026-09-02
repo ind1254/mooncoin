@@ -24,6 +24,13 @@ export const settingsSchema = z.object({
         .default({}),
 });
 export const DEFAULT_SETTINGS = settingsSchema.parse({});
+/**
+ * Account preferences exclude the legacy file-backed watchlist. Personal
+ * watchlist membership has its own normalized table and must never be copied
+ * into a settings blob where two writes could overwrite one another.
+ */
+export const accountSettingsSchema = settingsSchema.omit({ watchlist: true });
+export const DEFAULT_ACCOUNT_SETTINGS = accountSettingsSchema.parse({});
 /** Which token risk levels the user's preference accepts. */
 export function allowedRiskLevels(pref) {
     switch (pref) {

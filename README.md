@@ -10,6 +10,24 @@ for real execution. It answers one question:
 **"Based on current market conditions, what deserves my attention, what are the
 risks, and what would happen if I paper-traded it?"**
 
+[**Live application**](https://mooncoin-two.vercel.app/) · [**Engineering view**](https://mooncoin-two.vercel.app/#/engineering) · [**One-minute walkthrough**](docs/media/moonpaper-demo.webm) · [**Case study**](docs/CASE_STUDY.md)
+
+![Moonpaper live Solana research dashboard](docs/media/research.png)
+
+### Recruiter quick scan
+
+- **Real product surface:** live Jupiter discovery, direct Solana RPC checks, exact-size quotes, and an authenticated paper portfolio deployed on Vercel.
+- **Durable full-stack state:** Postgres-backed sessions, preferences, saved coins, alerts, positions, and Bot Lab decisions restore after refresh and future sign-ins.
+- **Engineering proof:** 467 passing test executions, a real-browser persistence journey, 15 forward-only migrations, strict TypeScript, dependency auditing, and CI drift checks.
+- **Clear ownership boundary:** simulation only; zero wallet, signing, transaction-building, custody, or real-execution code paths.
+
+### Try it in 90 seconds
+
+1. Open **Research** and switch between Trending and Newest to inspect the live feed.
+2. Search a mint or open a card to see evidence provenance and the seven exact-size tradability gates.
+3. Create an account, save a coin, change Settings, then sign out and back in—the state is restored from Postgres.
+4. Open **Engineering** for the system map and decisions, then **Demo Sandbox** for the deliberately isolated seeded scenarios.
+
 > **On naming.** The product is **Moonpaper**; the Git repository is still
 > named `mooncoin` for historical reasons. Renaming the repository would break
 > the existing remote, the deployment link and any shared URLs, so the name is
@@ -98,8 +116,9 @@ to sign, so there is nothing to custody, sign, or submit.
 | **Paper trade** | Authenticated, persistent positions for real Solana mints. Entries rerun every production gate and store Jupiter's minimum received; closes use a fresh exact-size sell quote — never chart prices | Confirm modal / Portfolio |
 | **Learn** | Database-backed virtual cash, live minimum-received marks, open/closed positions, and realized/unrealized P&L | Portfolio tab |
 
-Plus: watchlist, user settings with sensible defaults, and in-app alerts that
-always explain *why* they fired (with cooldowns and material-change gates).
+Plus: database-backed watchlists and user settings, and persistent in-app
+alerts that always explain *why* they fired (with cooldowns and material-change
+gates). Each is restored from the signed-in account rather than server memory.
 
 ## Real-trade handoff to FOMO
 
@@ -188,7 +207,7 @@ On macOS/Linux, use `LOCAL_DB=true COOKIE_SECURE=false npm run dev:local`.
 
 Open **http://localhost:8787** — the web app. New and Trending token feeds come
 from Jupiter. Create an account to persist watchlist state and live-quote paper
-positions in the local PGlite database. The separate Simulator remains a
+positions in the local PGlite database. The separate Demo Sandbox remains a
 deterministic demonstration.
 
 ### Environment variables
@@ -212,9 +231,16 @@ Account links use the fixed `PUBLIC_APP_URL` rather than request headers.
 
 ```bash
 cd backend
-npm test           # feeds/quotes/gates, risk, money math, auth/lifecycle, safeguards, API flow
-npm run typecheck  # strict TypeScript, no emit
+npm run typecheck   # strict TypeScript, no emit
+npm test            # 467 unit/integration test executions across 43 suite files
+npm run test:e2e    # real Chromium account-persistence journey
+npm run audit:prod  # fail on moderate-or-higher production dependency findings
+npm run build       # compile the production server
 ```
+
+CI runs all of the above, validates the browser JavaScript, checks generated
+repository metrics, and fails if the committed production build drifts from
+reviewed source.
 
 ## Architecture
 
@@ -233,7 +259,7 @@ backend/src/
   worker/               Shared one-pass runtime, Vercel Cron handler, DB lease
   auth/ db/             Password sessions, Postgres migrations and repositories
   notify/               Notification rules: cooldowns, transitions, explanations
-  settings/             Single-user preferences with validated defaults
+  settings/             Validated defaults plus account-backed preferences
   api/                  createApp() factory, demo seeding, server entry, legacy
                         arbitrage-calculator routes (original add-on, still works)
   core/ adapters/ ...   Original arbitrage engine (BigInt money math) — reused
@@ -283,6 +309,10 @@ POST /v1/auth/resend-verification
 POST /v1/owner/unlock             Authorization: Bearer <owner-key>
 GET  /v1/me
 GET  /v1/me/portfolio
+GET  /v1/me/watchlist              POST /v1/me/watchlist
+DELETE /v1/me/watchlist/:mint
+GET  /v1/me/settings               PUT /v1/me/settings
+GET  /v1/me/notifications          POST /v1/me/notifications/mark-read
 GET  /v1/me/paper-bot              (strategy, worker status, decision audit)
 PUT  /v1/me/paper-bot              (enable/disable and bounded strategy settings)
 GET  /v1/integrations/fomo/sequences ?cursor&limit (owner-only paper decisions)
@@ -294,9 +324,9 @@ GET  /v1/tokens/:mint/routes        ?tradeSizeSol&slippageBps
 POST /v1/paper/positions            {tokenMint, solAmount, slippageBps?}
 POST /v1/paper/positions/:id/close
 GET  /v1/paper/portfolio
-GET  /v1/notifications              POST /v1/notifications/mark-read
-GET  /v1/settings                   PUT  /v1/settings
-POST /v1/watchlist                  {mint, watched}
+GET  /v1/notifications              POST /v1/notifications/mark-read (legacy demo)
+GET  /v1/settings                   PUT  /v1/settings              (legacy demo)
+POST /v1/watchlist                  {mint, watched}                 (legacy demo)
 POST /v1/arbitrage/calculate        (legacy calculator, USD-denominated)
 ```
 
@@ -334,9 +364,10 @@ immediately.
 - Solana's public RPC can rate-limit on-chain authority verification. When it
   does, Moonpaper shows verification as unavailable rather than trusting a
   provider claim as chain truth.
-- Accounts, sessions, watchlists, virtual cash, live paper positions, and
-  one-time account actions persist in Postgres (or PGlite locally). Production
-  email delivery still requires a verified sender domain in Resend.
+- Accounts, sessions, settings, watchlists, virtual cash, live paper positions,
+  Bot Lab configuration/decisions, alerts, and one-time account actions persist
+  in Postgres (or PGlite locally). Production email delivery still requires a
+  verified sender domain in Resend.
 - In-app notifications only; no push. Alerts and the shadow bot run through the
   production Vercel Cron function described in `docs/ALERT_WORKER.md`; the
   one-minute schedule requires a Pro or Enterprise Vercel plan.

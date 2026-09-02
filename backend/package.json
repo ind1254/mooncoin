@@ -17,11 +17,14 @@
     "migrate": "tsx src/db/runMigrations.ts",
     "migrate:if-configured": "tsx src/db/runMigrations.ts --if-configured",
     "test": "vitest run --maxWorkers=4",
+    "test:e2e": "playwright test",
+    "media:capture": "node scripts/capture-resume-media.mjs",
     "dev:local": "tsx watch src/api/server.ts --live",
     "worker": "node dist/worker/main.js",
     "worker:dev": "tsx watch src/worker/main.ts",
     "docs:metrics": "node scripts/repo-metrics.mjs",
-    "docs:metrics:check": "node scripts/repo-metrics.mjs --check"
+    "docs:metrics:check": "node scripts/repo-metrics.mjs --check",
+    "audit:prod": "npm audit --omit=dev --audit-level=moderate"
   },
   "dependencies": {
     "express": "^4.21.2",
@@ -30,11 +33,15 @@
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.5",
+    "@playwright/test": "^1.62.1",
     "@types/express": "^4.17.21",
     "@types/node": "^22.10.0",
     "@types/pg": "^8.21.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^4.1.11"
+  },
+  "overrides": {
+    "qs": "6.16.0"
   }
 }
