@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { ArbError } from "../../core/errors.js";
+import { metrics, outcomeForErrorCode } from "../../observability/metrics.js";
 
 /**
  * Minimal read-only Solana JSON-RPC client.
@@ -122,6 +123,27 @@ export class SolanaRpcClient {
    * account, an empty list — is data, and is left for callers to interpret.
    */
   private async call<T>(
+    method: string,
+    params: unknown[],
+    resultSchema: z.ZodType<T>,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    // Keyed by RPC method, never by endpoint: an endpoint URL can carry an API
+    // key in its path or query string, and metrics must never hold a secret.
+    const metricKey = `solana:rpc:${method}`;
+    const startedAt = Date.now();
+    try {
+      const result = await this.callInner(method, params, resultSchema, signal);
+      metrics.providerCall(metricKey, "ok", Date.now() - startedAt);
+      return result;
+    } catch (err) {
+      const code = (err as { code?: string }).code ?? "";
+      metrics.providerCall(metricKey, outcomeForErrorCode(code), Date.now() - startedAt);
+      throw err;
+    }
+  }
+
+  private async callInner<T>(
     method: string,
     params: unknown[],
     resultSchema: z.ZodType<T>,

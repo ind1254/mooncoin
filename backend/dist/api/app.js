@@ -17,6 +17,10 @@ import { TradabilityService } from "../market/tradability.js";
 import { GRADUATION_MATURITY_MS, GRADUATION_QUALITY_SCORE, assessLiveFeedToken, sumLiveFeedVolume, } from "../market/feedAssessment.js";
 import { AutoWatchRepository } from "../db/repositories.js";
 import { metrics } from "../observability/metrics.js";
+import { snapshotFromResearch } from "../evidence/build.js";
+import { assessRisk } from "../risk/engineV3.js";
+import { explainRiskChange, formatRiskChange } from "../risk/diff.js";
+import { TokenHistoryRepository } from "../db/tokenHistory.js";
 import { SolanaRpcClient } from "../market/solana/rpc.js";
 import { computeScores } from "../scoring/scores.js";
 import { PaperTradingEngine } from "../paper/engine.js";
@@ -372,6 +376,41 @@ function serializeSearchResult(r) {
         priceUsd: r.market.priceUsdPico === null ? null : picoUsdToPriceString(r.market.priceUsdPico),
         liquidityUsd: usdOrNull(r.market.liquidityUsdMicro),
         holderCount: r.market.holderCount,
+    };
+}
+/** Risk v3, wire shape. Factors carry their own provenance, not just a number. */
+function serializeRiskAssessment(risk) {
+    return {
+        riskScore: risk.riskScore,
+        riskConfidence: risk.riskConfidence,
+        riskLevel: risk.riskLevel,
+        riskModelVersion: risk.riskModelVersion,
+        observedAt: new Date(risk.observedAt).toISOString(),
+        factors: risk.factors.map((f) => ({
+            id: f.id,
+            label: f.label,
+            fact: f.fact,
+            interpretation: f.interpretation,
+            points: f.points,
+            direction: f.direction,
+            status: f.status,
+            source: f.source,
+        })),
+        missingEvidence: risk.missingEvidence,
+    };
+}
+/**
+ * What the assessment knew and did not know.
+ *
+ * Published so a client can say "scored without holder data" rather than
+ * presenting a confident number over a partial picture.
+ */
+function serializeEvidenceSummary(snapshot) {
+    return {
+        observedAt: new Date(snapshot.observedAt).toISOString(),
+        sources: snapshot.sources,
+        unavailable: snapshot.unavailableEvidence,
+        unavailableCount: snapshot.unavailableEvidence.length,
     };
 }
 function serializeProfile(p) {
@@ -1011,7 +1050,24 @@ export function createApp(deps) {
             const abort = new AbortController();
             req.on("close", () => abort.abort());
             const profile = await deps.research.getProfile(req.params.mint, abort.signal);
-            res.json({ ...meta(deps), ...serializeProfile(profile) });
+            const snapshot = snapshotFromResearch(profile, deps.clock(), {
+                maxMarketAgeMs: tradabilityPolicy.maxMarketAgeMs,
+            });
+            const risk = assessRisk(snapshot, {
+                minLiquidityUsdMicro: tradabilityPolicy.minLiquidityUsdMicro,
+                maxPriceImpactBps: tradabilityPolicy.maxPriceImpactBps,
+            });
+            res.json({
+                ...meta(deps),
+                ...serializeProfile(profile),
+                // Added ALONGSIDE the existing `risk` field rather than replacing it.
+                // The two models disagree by construction — v3 refuses to treat missing
+                // evidence as safe — so swapping them silently would change what every
+                // existing consumer sees without anyone deciding to. Consumers migrate
+                // deliberately; the old field is removed once nothing reads it.
+                riskV3: serializeRiskAssessment(risk),
+                evidence: serializeEvidenceSummary(snapshot),
+            });
         }
         catch (err) {
             fail(res, err);
@@ -1280,6 +1336,123 @@ export function createApp(deps) {
                 });
             }
             res.json({ settings: deps.settings.update(patch.data) });
+        }
+        catch (err) {
+            fail(res, err);
+        }
+    });
+    /**
+     * A token's recorded history.
+     *
+     * Answers "what was this like an hour ago?". Public and read-only, like the
+     * rest of the research surface. Degrades to an explained empty series when
+     * persistence is absent rather than pretending the token has no past.
+     */
+    app.get("/v1/tokens/:mint/history", async (req, res) => {
+        try {
+            const mint = req.params.mint;
+            if (!deps.db) {
+                res.json({ mint, available: false, reason: "Persistence is not configured.", points: [] });
+                return;
+            }
+            const parsed = z
+                .object({
+                limit: z.coerce.number().int().min(1).max(500).default(200),
+                sinceMs: z.coerce.number().int().min(0).optional(),
+            })
+                .safeParse(req.query);
+            if (!parsed.success) {
+                throw new ArbError("VALIDATION_ERROR", "Invalid history query", 400);
+            }
+            const history = new TokenHistoryRepository(deps.db);
+            const now = deps.clock();
+            const points = parsed.data.sinceMs
+                ? await history.between(mint, parsed.data.sinceMs, now)
+                : await history.list(mint, parsed.data.limit);
+            res.json({
+                mint,
+                available: true,
+                count: points.length,
+                notice: "Older points are downsampled: every observation for the last 6 hours, then hourly, then daily. Each point is a real observation, never an average.",
+                points: points.map((p) => ({
+                    observedAt: new Date(p.observedAtMs).toISOString(),
+                    resolution: p.resolution,
+                    riskScore: p.riskScore,
+                    riskConfidence: p.riskConfidence,
+                    riskModelVersion: p.riskModelVersion,
+                    priceUsd: p.pricePicoUsd === null ? null : picoUsdToPriceString(p.pricePicoUsd),
+                    liquidityUsd: p.liquidityUsdMicro === null ? null : microToUsdString(p.liquidityUsdMicro),
+                    marketCapUsd: p.marketCapUsdMicro === null ? null : microToUsdString(p.marketCapUsdMicro),
+                    walletConcentrationPct: p.walletConcentrationBps === null ? null : pctStr(p.walletConcentrationBps),
+                    mintAuthorityRevoked: p.mintAuthorityRevoked,
+                    freezeAuthorityRevoked: p.freezeAuthorityRevoked,
+                })),
+            });
+        }
+        catch (err) {
+            fail(res, err);
+        }
+    });
+    /**
+     * Why a token's risk moved.
+     *
+     * Compares the current assessment against the recorded observation in force
+     * at `sinceMs`. Deterministic: the explanation is derived from stored facts,
+     * never narrated.
+     */
+    app.get("/v1/tokens/:mint/risk-change", async (req, res) => {
+        try {
+            const mint = req.params.mint;
+            const parsed = z
+                .object({ sinceMs: z.coerce.number().int().min(0).optional() })
+                .safeParse(req.query);
+            if (!parsed.success)
+                throw new ArbError("VALIDATION_ERROR", "Invalid risk-change query", 400);
+            const now = deps.clock();
+            const sinceMs = parsed.data.sinceMs ?? now - 3_600_000;
+            if (!deps.db) {
+                res.json({ mint, available: false, reason: "Persistence is not configured." });
+                return;
+            }
+            const past = await new TokenHistoryRepository(deps.db).asOf(mint, sinceMs);
+            if (!past || past.riskScore === null || past.riskModelVersion === null) {
+                res.json({
+                    mint,
+                    available: false,
+                    reason: "No recorded observation at or before that time to compare against.",
+                });
+                return;
+            }
+            const abort = new AbortController();
+            req.on("close", () => abort.abort());
+            const profile = await deps.research.getProfile(mint, abort.signal);
+            const current = assessRisk(snapshotFromResearch(profile, now, { maxMarketAgeMs: tradabilityPolicy.maxMarketAgeMs }), {
+                minLiquidityUsdMicro: tradabilityPolicy.minLiquidityUsdMicro,
+                maxPriceImpactBps: tradabilityPolicy.maxPriceImpactBps,
+            });
+            // A stored row keeps the score and version but not the factor breakdown,
+            // so the comparison is at score level. Reconstructing factors from a
+            // summary row would be inventing detail that was never recorded.
+            const change = explainRiskChange({
+                riskScore: past.riskScore,
+                riskConfidence: past.riskConfidence ?? 0,
+                riskLevel: past.riskScore >= 45 ? "high" : past.riskScore >= 20 ? "medium" : "low",
+                riskModelVersion: past.riskModelVersion,
+                factors: [],
+                missingEvidence: [],
+                observedAt: past.observedAtMs,
+            }, current);
+            res.json({
+                mint,
+                available: true,
+                comparedAgainst: new Date(past.observedAtMs).toISOString(),
+                change: {
+                    ...change,
+                    previousObservedAt: new Date(change.previousObservedAt).toISOString(),
+                    currentObservedAt: new Date(change.currentObservedAt).toISOString(),
+                },
+                summary: formatRiskChange(change),
+            });
         }
         catch (err) {
             fail(res, err);
