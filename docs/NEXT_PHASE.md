@@ -105,7 +105,7 @@ abstraction must be a strict superset — it must not flatten `verified` vs
 
 ---
 
-## Checkpoint 4 — Risk engine v3
+## Checkpoint 4 — Risk engine v3  ✅ **done**
 
 Versioned risk over structured evidence, returning `riskScore`,
 `riskConfidence`, `riskLevel`, `riskModelVersion`, `factors[]`,

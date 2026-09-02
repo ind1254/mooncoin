@@ -14,7 +14,7 @@ Severity is about *consequence*, not effort.
 | 4 | No backend CI; only iOS is validated | Medium | Open — Checkpoint 2 |
 | 5 | `backend/dist` is committed to Git | Medium | Open — Checkpoint 2 |
 | 6 | Brand and metadata are inconsistent; `PROJECT_SUMMARY.md` is stale | Low | Open — Checkpoint 2 |
-| 7 | Risk scoring is unversioned outside the live feed | Medium | Open — Checkpoint 4 |
+| 7 | Risk scoring is unversioned outside the live feed | Medium | **Fixed** — risk-v3.0.0 |
 | 8 | Token observations keep only the latest row | Medium | Open — Checkpoint 7 |
 
 ---
