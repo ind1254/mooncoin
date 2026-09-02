@@ -124,13 +124,21 @@ function quote(req: QuoteRequest): NormalizedSwapQuote {
       inputMint: req.inputMint,
       outputMint: req.outputMint,
       percent: 100,
+      inAmount: null,
+      outAmount: null,
+      updateContextSlot: null,
     }],
     swapUsdValueMicro: entry ? req.amount : exitValue,
     contextSlot: 1,
     swapMode: "ExactIn",
     retrievedAtMs: now,
     expiresAtMs: now + 20_000,
+    platformFee: null,
     source: "jupiter:quote-v1",
+    apiVersion: "v1" as const,
+    providerLatencyMs: null,
+    providerRequestId: null,
+    instructionVersion: null,
   };
 }
 

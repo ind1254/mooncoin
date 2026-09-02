@@ -1,0 +1,76 @@
+name: Backend
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - "api/**"
+      - ".github/workflows/backend.yml"
+  pull_request:
+    paths:
+      - "backend/**"
+      - "api/**"
+      - ".github/workflows/backend.yml"
+
+# A superseded run on the same branch has nothing left to tell us.
+concurrency:
+  group: backend-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: backend
+
+    env:
+      # Migrations are exercised against PGlite inside the test suite. CI must
+      # never hold a real connection string, so no production migration can run
+      # from here even by accident.
+      NODE_ENV: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # --maxWorkers=4 is load-bearing, not tuning: each suite spins up its own
+      # PGlite instance, and unbounded concurrency makes the migration hooks
+      # time out and report failures that are not real.
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Verify PROJECT_SUMMARY metrics are current
+        # These counts were hand-written and drifted badly (3 migrations claimed
+        # when there were 11). Generated now, and checked here so they cannot
+        # rot again.
+        run: npm run docs:metrics:check
+
+      - name: Verify committed dist matches source
+        # backend/dist is currently tracked in Git and shipped to Vercel via
+        # includeFiles, so a stale dist deploys code that does not match the
+        # reviewed source. Until the build/deploy ordering is redesigned, CI
+        # holds the line. See docs/TECHNICAL_AUDIT.md Finding 5.
+        run: |
+          if ! git diff --quiet -- dist; then
+            echo "::error::backend/dist is out of date. Run 'npm run build' in backend/ and commit the result."
+            git diff --stat -- dist
+            exit 1
+          fi
+          echo "dist is in sync with source"

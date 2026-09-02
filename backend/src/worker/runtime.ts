@@ -12,8 +12,9 @@ import {
   PaperBotPositionStateRepository,
   TokenObservationRepository,
   WorkerLeaseRepository,
+  AutoWatchRepository,
 } from "../db/repositories.js";
-import { JupiterLiveFeedProvider } from "../market/jupiter/liveFeed.js";
+import { JupiterLiveFeedProvider, type LiveFeedKind } from "../market/jupiter/liveFeed.js";
 import { JupiterQuoteProvider } from "../market/jupiter/quotes.js";
 import { JupiterTokenSearchProvider } from "../market/jupiter/tokenSearch.js";
 import { ResearchService } from "../market/research.js";
@@ -104,6 +105,16 @@ export function createScheduledWorkerRuntime(
       maxMarketAgeMs: env.TRADABILITY_MAX_MARKET_AGE_MS,
       clock,
       log,
+    },
+    graduation: {
+      getFeed: (kind: LiveFeedKind) => liveFeed.getFeed(kind),
+      autoWatch: new AutoWatchRepository(db),
+      policy: {
+        minLiquidityUsdMicro: usdToMicro(env.TRADABILITY_MIN_LIQUIDITY_USD),
+        maxPriceImpactBps: BigInt(env.TRADABILITY_MAX_PRICE_IMPACT_BPS),
+        maxMarketAgeMs: env.TRADABILITY_MAX_MARKET_AGE_MS,
+      },
+      clock,
     },
     leases: new WorkerLeaseRepository(db),
     clock,

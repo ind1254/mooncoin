@@ -621,3 +621,33 @@ footer.disclaimer {
   .gate-row { grid-template-columns: 20px minmax(0, 1fr); }
   .gate-row .src { grid-column: 2; width: max-content; }
 }
+
+
+/* Auto-watch shelf: established coins kept out of Discover so new launches
+   get a slot. The note exists so a coin never simply vanishes without
+   explanation. */
+.signal-cell.graduated { border-left: 3px solid var(--muted, #7b8794); }
+
+.graduated-note {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border: 1px dashed rgba(127, 140, 158, 0.45);
+  border-radius: 10px;
+  font-size: 13px;
+  opacity: 0.9;
+}
+
+.linkish {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: var(--accent, #6ee7b7);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.linkish:hover { opacity: 0.8; }

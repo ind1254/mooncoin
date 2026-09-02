@@ -1599,3 +1599,103 @@ export class WorkerLeaseRepository {
     return rows.length === 1;
   }
 }
+
+export type AutoWatchReason = "market_maturity" | "quality_threshold";
+
+export interface AutoWatchRecord {
+  tokenMint: string;
+  reason: AutoWatchReason;
+  symbol: string | null;
+  name: string | null;
+  qualityScore: number | null;
+  riskScore: number | null;
+  scoreVersion: string;
+  firstPromotedAtMs: number;
+  lastSeenAtMs: number;
+}
+
+export interface AutoWatchPromotion {
+  tokenMint: string;
+  reason: AutoWatchReason;
+  symbol: string | null;
+  name: string | null;
+  qualityScore: number | null;
+  riskScore: number | null;
+  scoreVersion: string;
+}
+
+/**
+ * The auto-watch shelf: tokens that have graduated out of discovery.
+ *
+ * System-owned and not tied to any user, because graduation is derived from
+ * global market data. The per-user `watchlist_items` table is untouched by
+ * this repository on purpose — a person's own picks are theirs.
+ */
+export class AutoWatchRepository {
+  constructor(private readonly db: SqlClient) {}
+
+  async list(limit = 100): Promise<AutoWatchRecord[]> {
+    const rows = await this.db.query(
+      `select token_mint, reason, symbol, name, quality_score, risk_score,
+              score_version, first_promoted_at, last_seen_at
+         from auto_watch_items
+        order by first_promoted_at desc
+        limit $1`,
+      [limit],
+    );
+    return rows.map((row) => ({
+      tokenMint: readString(row.token_mint),
+      reason: readString(row.reason) as AutoWatchReason,
+      symbol: readNullableString(row.symbol),
+      name: readNullableString(row.name),
+      qualityScore: row.quality_score === null ? null : readInteger(row.quality_score),
+      riskScore: row.risk_score === null ? null : readInteger(row.risk_score),
+      scoreVersion: readString(row.score_version),
+      firstPromotedAtMs: readDateMs(row.first_promoted_at),
+      lastSeenAtMs: readDateMs(row.last_seen_at),
+    }));
+  }
+
+  async listMints(): Promise<string[]> {
+    const rows = await this.db.query("select token_mint from auto_watch_items", []);
+    return rows.map((row) => readString(row.token_mint));
+  }
+
+  /**
+   * Idempotent: the worker runs every minute and re-promotes the same tokens.
+   * `first_promoted_at` is deliberately never overwritten, so the graduation
+   * date survives; everything else tracks the latest observation.
+   */
+  async promote(entry: AutoWatchPromotion): Promise<void> {
+    await this.db.query(
+      `insert into auto_watch_items
+         (token_mint, reason, symbol, name, quality_score, risk_score, score_version)
+       values ($1, $2, $3, $4, $5, $6, $7)
+       on conflict (token_mint) do update set
+         reason        = excluded.reason,
+         symbol        = coalesce(excluded.symbol, auto_watch_items.symbol),
+         name          = coalesce(excluded.name, auto_watch_items.name),
+         quality_score = excluded.quality_score,
+         risk_score    = excluded.risk_score,
+         score_version = excluded.score_version,
+         last_seen_at  = now()`,
+      [
+        entry.tokenMint,
+        entry.reason,
+        entry.symbol,
+        entry.name,
+        entry.qualityScore,
+        entry.riskScore,
+        entry.scoreVersion,
+      ],
+    );
+  }
+
+  async remove(tokenMint: string): Promise<boolean> {
+    const rows = await this.db.query(
+      "delete from auto_watch_items where token_mint = $1 returning token_mint",
+      [tokenMint],
+    );
+    return rows.length > 0;
+  }
+}

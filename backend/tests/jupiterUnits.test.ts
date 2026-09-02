@@ -2,6 +2,11 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { priceImpactFractionToBpsCeil } from "../src/market/jupiter/units.js";
+import {
+  JupiterQuoteProvider,
+  assertQuoteOnlyBaseUrl,
+  inferApiVersionFromUrl,
+} from "../src/market/jupiter/quotes.js";
 
 /**
  * Jupiter's `priceImpactPct` is a decimal fraction (1 = 100%), NOT a
@@ -102,5 +107,44 @@ describe("recorded provider evidence", () => {
       expect(Number(leg.priceImpactPct)).toBeLessThanOrEqual(1);
       expect(priceImpactFractionToBpsCeil(leg.priceImpactPct)).toBeLessThanOrEqual(10_000n);
     }
+  });
+});
+
+describe("quote API version selection and provenance", () => {
+  it("infers the generation from the configured URL", () => {
+    expect(inferApiVersionFromUrl("https://api.jup.ag/swap/v2")).toBe("v2");
+    expect(inferApiVersionFromUrl("https://lite-api.jup.ag/swap/v1")).toBe("v1");
+    expect(inferApiVersionFromUrl("https://quote-api.jup.ag/v6")).toBe("v1");
+    expect(inferApiVersionFromUrl("https://example.test/quotes")).toBeNull();
+    expect(inferApiVersionFromUrl("not a url")).toBeNull();
+  });
+
+  it("stamps provenance from the endpoint that actually answered", () => {
+    // Regression: the stamp was a hardcoded constant, so it read "quote-v1"
+    // no matter which endpoint a deployment pointed at.
+    expect(new JupiterQuoteProvider({ baseUrl: "https://api.jup.ag/swap/v2" }).source).toBe(
+      "jupiter:quote-v2",
+    );
+    expect(new JupiterQuoteProvider({ baseUrl: "https://lite-api.jup.ag/swap/v1" }).source).toBe(
+      "jupiter:quote-v1",
+    );
+  });
+
+  it("stays on V1 without a key, because V2's host rate-limits keyless callers", () => {
+    // Measured 2026-09-01: six keyless requests to api.jup.ag returned
+    // 200 200 200 200 429 429. Defaulting to V2 would break quoting outright.
+    expect(new JupiterQuoteProvider({}).apiVersion).toBe("v1");
+    expect(new JupiterQuoteProvider({ apiKey: "test-key" }).apiVersion).toBe("v2");
+    expect(new JupiterQuoteProvider({ apiKey: "test-key", apiVersion: "v1" }).apiVersion).toBe("v1");
+  });
+
+  it("refuses a base URL that points at an execution endpoint", () => {
+    // The safety boundary as an assertion: quote-only, enforced at construction.
+    expect(() => assertQuoteOnlyBaseUrl("https://api.jup.ag/swap")).toThrow();
+    expect(() => assertQuoteOnlyBaseUrl("https://lite-api.jup.ag/ultra/v1/execute")).toThrow();
+    expect(() => assertQuoteOnlyBaseUrl("https://lite-api.jup.ag/ultra/v1/order")).toThrow();
+    expect(() => new JupiterQuoteProvider({ baseUrl: "https://api.jup.ag/swap" })).toThrow();
+    // The API family path is fine; only a trailing action segment is not.
+    expect(() => assertQuoteOnlyBaseUrl("https://api.jup.ag/swap/v2")).not.toThrow();
   });
 });

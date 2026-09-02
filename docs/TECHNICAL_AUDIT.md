@@ -10,7 +10,7 @@ Severity is about *consequence*, not effort.
 |---|---|---|---|
 | 1 | `priceImpactPct` misread as a percentage; every impact gate 100x too loose | **Critical** | **Fixed** |
 | 2 | The same conversion existed twice, in two modules, both wrong | **High** | **Fixed** |
-| 3 | Jupiter Swap V1 / Metis is deprecated upstream | Medium | Open — Checkpoint 1 |
+| 3 | Jupiter Swap V1 / Metis is deprecated upstream | Medium | **Addressed** — see below |
 | 4 | No backend CI; only iOS is validated | Medium | Open — Checkpoint 2 |
 | 5 | `backend/dist` is committed to Git | Medium | Open — Checkpoint 2 |
 | 6 | Brand and metadata are inconsistent; `PROJECT_SUMMARY.md` is stale | Low | Open — Checkpoint 2 |
@@ -165,7 +165,7 @@ Finding 3.
 
 ---
 
-## Finding 3 — Jupiter Swap V1 / Metis is deprecated (open)
+## Finding 3 — Jupiter Swap V1 / Metis is deprecated (addressed)
 
 Jupiter's current documentation states Metis Swap API "is no longer actively
 maintained and has been superseded by Swap V2". The repository defaults to
@@ -176,6 +176,44 @@ Provenance is stamped as `jupiter:quote-v1` (`JUPITER_QUOTE_SOURCE`) and must
 be updated to the real version when migrated, not left describing an endpoint
 no longer called. Deferred to Checkpoint 1; the `QuoteProvider` interface
 already insulates domain code from the response shape, so this is contained.
+
+### Resolution (Checkpoint 1)
+
+Investigated before migrating, and the investigation changed the plan.
+
+**The two responses are structurally identical.** Fetching the same quote from
+`lite-api.jup.ag/swap/v1` and `api.jup.ag/swap/v2` and diffing the field sets
+returned *no* difference at the top level, in `routePlan`, or in `swapInfo`.
+The only delta is `instructionVersion` (null vs "V2"), which describes
+transaction building and is irrelevant to a quote-only integration. So this was
+never a schema migration — it is a transport choice.
+
+**V2 cannot be the unconditional default.** V2 is served only from
+`api.jup.ag`; `lite-api.jup.ag/swap/v2` returns 404. And `api.jup.ag`
+without an API key allows roughly five requests before 429 — a burst of six
+keyless requests returned `200 200 200 200 429 429`, with
+`x-ratelimit-remaining: 4` on the first. Defaulting to V2 would have traded a
+working quote path for one that rate-limits almost immediately.
+
+Implemented instead:
+
+- `JupiterQuoteApiVersion` with precedence: explicit option, then the version
+  read off the configured URL, then the key (V2 when a key exists, V1 without).
+- **Provenance is now derived, not hardcoded.** The old `JUPITER_QUOTE_SOURCE`
+  constant stamped `quote-v1` regardless of the endpoint actually called.
+  `inferApiVersionFromUrl()` fixes that at the source.
+- Additional execution intelligence captured that was previously discarded:
+  `platformFee`, per-hop `inAmount`/`outAmount`/`updateContextSlot`,
+  `providerLatencyMs` (from `timeTaken`), `providerRequestId` (the
+  `x-api-gateway-request-id` trace header) and `instructionVersion`.
+- **Safety boundary hardened into an assertion.** `assertQuoteOnlyBaseUrl()`
+  rejects a base URL ending in `/swap`, `/order`, `/execute` or `/send` at
+  construction, and the response handler refuses any body carrying
+  `swapTransaction` or similar. Quote-only is now enforced by code, not just
+  by convention.
+
+Moving to V2 is a two-line environment change (`JUPITER_QUOTE_URL` +
+`JUPITER_API_KEY`); provenance follows automatically.
 
 ---
 

@@ -19,7 +19,9 @@
     "test": "vitest run --maxWorkers=4",
     "dev:local": "tsx watch src/api/server.ts --live",
     "worker": "node dist/worker/main.js",
-    "worker:dev": "tsx watch src/worker/main.ts"
+    "worker:dev": "tsx watch src/worker/main.ts",
+    "docs:metrics": "node scripts/repo-metrics.mjs",
+    "docs:metrics:check": "node scripts/repo-metrics.mjs --check"
   },
   "dependencies": {
     "express": "^4.21.2",
