@@ -4,8 +4,9 @@ Sequenced plan following the Checkpoint 0 correctness work. Ordering is
 deliberate: correctness, then the foundations later checkpoints depend on, then
 intelligence features.
 
-Checkpoint 0 is **complete** — see [TECHNICAL_AUDIT.md](TECHNICAL_AUDIT.md)
-Findings 1 and 2.
+Checkpoints 0, 1, 3 are complete and Checkpoint 2 is partly done — see
+[TECHNICAL_AUDIT.md](TECHNICAL_AUDIT.md). Checkpoint 3 shipped as
+`src/evidence/` (`types.ts`, `build.ts`) with 19 tests.
 
 ---
 
@@ -83,7 +84,7 @@ after it.
 
 ---
 
-## Checkpoint 3 — Unified evidence model
+## Checkpoint 3 — Unified evidence model  ✅ **done**
 
 **Not a merge of the four assessment paths.** They have genuinely distinct
 responsibilities (see CURRENT_ARCHITECTURE §7) and collapsing them would lose
