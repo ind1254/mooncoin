@@ -159,7 +159,7 @@ level.
 
 ---
 
-## Checkpoint 7 — Historical token intelligence
+## Checkpoint 7 — Historical token intelligence  ✅ **done**
 
 Replace the overwrite-in-place `token_observations` (Finding 8) with a
 **bounded** history: high resolution for recent hours, medium for days, lower
@@ -174,7 +174,7 @@ this?*
 
 ---
 
-## Checkpoint 8 — Risk change explanations
+## Checkpoint 8 — Risk change explanations  ✅ **done**
 
 Deterministic snapshot-diff over structured evidence. No LLM.
 
