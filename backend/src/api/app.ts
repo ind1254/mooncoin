@@ -35,6 +35,7 @@ import {
   type LiveFeedAssessment,
 } from "../market/feedAssessment.js";
 import { AutoWatchRepository } from "../db/repositories.js";
+import { metrics } from "../observability/metrics.js";
 import { SolanaRpcClient } from "../market/solana/rpc.js";
 import type { TokenSearchResult } from "../market/types.js";
 import type {
@@ -1486,6 +1487,30 @@ export function createApp(deps: AppDeps): Express {
     } catch (err) {
       fail(res, err);
     }
+  });
+
+  /**
+   * Provider diagnostics.
+   *
+   * Protected by ADMIN_TOKEN, because operational detail about which provider
+   * is failing is not something to publish. Returns 404 rather than 401 when
+   * no token is configured, so the endpoint's existence is not advertised on a
+   * deployment that never enabled it.
+   *
+   * Contains no secrets by construction: the registry is keyed by provider id
+   * and outcome, never by URL, credential, token, or user input.
+   */
+  app.get("/admin/metrics", (req, res) => {
+    const adminToken = deps.env.ADMIN_TOKEN;
+    if (!adminToken || req.headers["x-admin-token"] !== adminToken) {
+      res.status(404).json({ error: { code: "NOT_FOUND", message: "Not found" } });
+      return;
+    }
+    res.json({
+      notice:
+        "Counters describe this serverless instance since it started, not a global total. Instances recycle.",
+      ...metrics.snapshot(),
+    });
   });
 
   /**

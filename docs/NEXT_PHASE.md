@@ -242,12 +242,12 @@ report should treat the fix as a regime boundary.
   (`api/`, `state/`, `format/`, `charts/`, `views/*`, `components/`) preserving
   behavior. No React rewrite for fashion; keep the no-build simplicity while it
   earns its place. Test high-value pure helpers.
-- **13 — Observability.** Provider-level operational insight: Jupiter and RPC
+- **13 — Observability.** ✅ **done** — Provider-level operational insight: Jupiter and RPC
   request counts, latency, timeouts, 429s, malformed responses, cache
   hit/miss, tradability rejection-reason counts, worker duration and failures,
   bot decisions. Never log keys, passwords, session tokens, or recovery and
   verification tokens. Protected diagnostic view.
-- **14 — Portfolio quality.** README covering problem, product, architecture,
+- **14 — Portfolio quality.** ✅ **done** — README covering problem, product, architecture,
   live-data boundaries, paper-trading safety, Solana verification, execution
   intelligence, risk model, historical intelligence, bot, financial precision,
   concurrency, testing, CI, deployment, limitations — with a Mermaid diagram

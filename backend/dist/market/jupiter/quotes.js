@@ -3,6 +3,7 @@ import { ArbError } from "../../core/errors.js";
 import { CachedLoader } from "../cache.js";
 import { isPlausibleAddress } from "../solana/rpc.js";
 import { priceImpactFractionToBpsCeil } from "./units.js";
+import { metrics, outcomeForErrorCode } from "../../observability/metrics.js";
 /**
  * Read-only swap quotes from Jupiter.
  *
@@ -185,7 +186,24 @@ export class JupiterQuoteProvider {
         const cached = await this.loader.load(key, () => this.fetchQuote(req, signal));
         return cached.value;
     }
+    /** Stable metric key. Never a URL: a query string can carry an API key. */
+    get metricKey() {
+        return `jupiter:quote-${this.apiVersion}`;
+    }
     async fetchQuote(req, signal) {
+        const startedAt = this.clock();
+        try {
+            const quote = await this.fetchQuoteInner(req, signal);
+            metrics.providerCall(this.metricKey, "ok", this.clock() - startedAt);
+            return quote;
+        }
+        catch (err) {
+            const code = err.code ?? "";
+            metrics.providerCall(this.metricKey, outcomeForErrorCode(code), this.clock() - startedAt);
+            throw err;
+        }
+    }
+    async fetchQuoteInner(req, signal) {
         const params = new URLSearchParams({
             inputMint: req.inputMint,
             outputMint: req.outputMint,
