@@ -2,6 +2,7 @@ import { usdToMicro } from "../core/money.js";
 import { createPgClient } from "../db/pgClient.js";
 import { AlertEventRepository, AlertRuleRepository, AlertRuleStateRepository, LivePaperPositionRepository, PaperBotConfigRepository, PaperBotDecisionRepository, PaperBotPositionStateRepository, TokenObservationRepository, WorkerLeaseRepository, AutoWatchRepository, } from "../db/repositories.js";
 import { JupiterLiveFeedProvider } from "../market/jupiter/liveFeed.js";
+import { TokenHistoryRepository } from "../db/tokenHistory.js";
 import { JupiterQuoteProvider } from "../market/jupiter/quotes.js";
 import { JupiterTokenSearchProvider } from "../market/jupiter/tokenSearch.js";
 import { ResearchService } from "../market/research.js";
@@ -70,6 +71,16 @@ export function createScheduledWorkerRuntime(env, options = {}) {
         graduation: {
             getFeed: (kind) => liveFeed.getFeed(kind),
             autoWatch: new AutoWatchRepository(db),
+            policy: {
+                minLiquidityUsdMicro: usdToMicro(env.TRADABILITY_MIN_LIQUIDITY_USD),
+                maxPriceImpactBps: BigInt(env.TRADABILITY_MAX_PRICE_IMPACT_BPS),
+                maxMarketAgeMs: env.TRADABILITY_MAX_MARKET_AGE_MS,
+            },
+            clock,
+        },
+        history: {
+            getFeed: (kind) => liveFeed.getFeed(kind),
+            history: new TokenHistoryRepository(db),
             policy: {
                 minLiquidityUsdMicro: usdToMicro(env.TRADABILITY_MIN_LIQUIDITY_USD),
                 maxPriceImpactBps: BigInt(env.TRADABILITY_MAX_PRICE_IMPACT_BPS),

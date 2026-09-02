@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { ArbError } from "../../core/errors.js";
+import { metrics, outcomeForErrorCode } from "../../observability/metrics.js";
 export const SOLANA_PUBLIC_MAINNET_RPC = "https://api.mainnet-beta.solana.com";
 /**
  * getMultipleAccounts is capped server-side. Exceeding it is a hard RPC error,
@@ -56,6 +57,22 @@ export class SolanaRpcClient {
      * account, an empty list — is data, and is left for callers to interpret.
      */
     async call(method, params, resultSchema, signal) {
+        // Keyed by RPC method, never by endpoint: an endpoint URL can carry an API
+        // key in its path or query string, and metrics must never hold a secret.
+        const metricKey = `solana:rpc:${method}`;
+        const startedAt = Date.now();
+        try {
+            const result = await this.callInner(method, params, resultSchema, signal);
+            metrics.providerCall(metricKey, "ok", Date.now() - startedAt);
+            return result;
+        }
+        catch (err) {
+            const code = err.code ?? "";
+            metrics.providerCall(metricKey, outcomeForErrorCode(code), Date.now() - startedAt);
+            throw err;
+        }
+    }
+    async callInner(method, params, resultSchema, signal) {
         const timeout = AbortSignal.timeout(this.timeoutMs);
         const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
         let res;

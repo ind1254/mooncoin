@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { runGraduationPass } from "../market/graduation.js";
+import { runHistoryPass } from "../market/historyPass.js";
+import { metrics } from "../observability/metrics.js";
 import { runAlertPass } from "../alerts/worker.js";
 import { runPaperBotPass } from "../bot/worker.js";
 export const SCHEDULED_WORKER_NAME = "alerts-and-shadow-paper-bot-v1";
@@ -45,6 +47,7 @@ export async function runScheduledWorkerPass(deps, runKey) {
             alert: null,
             bot: null,
             graduation: null,
+            history: null,
             failedComponents: [],
             simulationOnly: true,
             executionEnabled: false,
@@ -53,6 +56,7 @@ export async function runScheduledWorkerPass(deps, runKey) {
     let alert = null;
     let bot = null;
     let graduation = null;
+    let history = null;
     const failedComponents = [];
     try {
         alert = await runAlertPass(deps.alerts);
@@ -95,7 +99,23 @@ export async function runScheduledWorkerPass(deps, runKey) {
             });
         }
     }
+    if (deps.history) {
+        try {
+            history = await runHistoryPass(deps.history);
+        }
+        catch (err) {
+            failedComponents.push("history");
+            log({
+                ts: new Date(clock()).toISOString(),
+                level: "error",
+                msg: "scheduled history pass failed",
+                runKey,
+                error: err instanceof Error ? err.message : String(err),
+            });
+        }
+    }
     const completedAtMs = clock();
+    metrics.workerPass(Math.max(0, completedAtMs - startedAtMs), failedComponents);
     const result = {
         runKey,
         status: "completed",
@@ -106,6 +126,7 @@ export async function runScheduledWorkerPass(deps, runKey) {
         alert,
         bot,
         graduation,
+        history,
         failedComponents,
         simulationOnly: true,
         executionEnabled: false,

@@ -1,4 +1,5 @@
 import { asArbError, ArbError } from "../core/errors.js";
+import { metrics } from "../observability/metrics.js";
 import { decimalToBaseUnits } from "../core/money.js";
 export const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const gate = (id, label, status, blocking, detail, source) => ({ id, label, status, blocking, detail, source });
@@ -115,6 +116,10 @@ export class TradabilityService {
             gates.push(gate("price_impact", "Price impact", "unavailable", true, "Price impact cannot be evaluated without a live route.", "jupiter:quote-v1"));
         }
         const blocking = gates.filter((item) => item.blocking && item.status !== "pass");
+        // Counted so a thin feed can be explained: "impact rejected 400 tokens"
+        // is a different problem from "no route found for 400 tokens".
+        for (const gate of blocking)
+            metrics.gateRejection(gate.id);
         const eligible = blocking.length === 0;
         const tradable = gates.find((item) => item.id === "jupiter_route")?.status === "pass";
         const verdict = eligible

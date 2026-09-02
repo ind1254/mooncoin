@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { runGraduationPass, type GraduationPassSummary, type GraduationWorkerDeps } from "../market/graduation.js";
+import { runHistoryPass, type HistoryPassSummary, type HistoryWorkerDeps } from "../market/historyPass.js";
+import { metrics } from "../observability/metrics.js";
 import { runAlertPass, type AlertPassSummary, type AlertWorkerDeps } from "../alerts/worker.js";
 import { runPaperBotPass, type PaperBotPassSummary, type PaperBotWorkerDeps } from "../bot/worker.js";
 import type { WorkerLeaseRepository, WorkerLeaseCompletionStatus } from "../db/repositories.js";
@@ -19,6 +21,11 @@ export interface ScheduledWorkerDeps {
    * that check is pure and needs no database.
    */
   graduation?: GraduationWorkerDeps | undefined;
+  /**
+   * Records the observations every time-series feature depends on. Optional so
+   * existing callers keep working; absent means no history is written.
+   */
+  history?: HistoryWorkerDeps | undefined;
   leases: LeaseStore;
   clock?: () => number;
   log?: (line: Record<string, unknown>) => void;
@@ -34,7 +41,8 @@ export interface ScheduledWorkerPassResult {
   alert: AlertPassSummary | null;
   bot: PaperBotPassSummary | null;
   graduation: GraduationPassSummary | null;
-  failedComponents: Array<"alerts" | "paper_bot" | "graduation">;
+  history: HistoryPassSummary | null;
+  failedComponents: Array<"alerts" | "paper_bot" | "graduation" | "history">;
   simulationOnly: true;
   executionEnabled: false;
 }
@@ -91,6 +99,7 @@ export async function runScheduledWorkerPass(
       alert: null,
       bot: null,
       graduation: null,
+      history: null,
       failedComponents: [],
       simulationOnly: true,
       executionEnabled: false,
@@ -100,7 +109,8 @@ export async function runScheduledWorkerPass(
   let alert: AlertPassSummary | null = null;
   let bot: PaperBotPassSummary | null = null;
   let graduation: GraduationPassSummary | null = null;
-  const failedComponents: Array<"alerts" | "paper_bot" | "graduation"> = [];
+  let history: HistoryPassSummary | null = null;
+  const failedComponents: Array<"alerts" | "paper_bot" | "graduation" | "history"> = [];
 
   try {
     alert = await runAlertPass(deps.alerts);
@@ -143,7 +153,23 @@ export async function runScheduledWorkerPass(
     }
   }
 
+  if (deps.history) {
+    try {
+      history = await runHistoryPass(deps.history);
+    } catch (err) {
+      failedComponents.push("history");
+      log({
+        ts: new Date(clock()).toISOString(),
+        level: "error",
+        msg: "scheduled history pass failed",
+        runKey,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   const completedAtMs = clock();
+  metrics.workerPass(Math.max(0, completedAtMs - startedAtMs), failedComponents);
   const result: ScheduledWorkerPassResult = {
     runKey,
     status: "completed",
@@ -154,6 +180,7 @@ export async function runScheduledWorkerPass(
     alert,
     bot,
     graduation,
+    history,
     failedComponents,
     simulationOnly: true,
     executionEnabled: false,
